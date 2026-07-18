@@ -1,0 +1,139 @@
+small_point_lio_pgo_loop_detector:
+  ros__parameters:
+    keyframe_topic: "/keyframe_msg"
+    filtered_keyframe_topic: ""
+    marker_topic: "/loop_candidates_marker"
+    optimized_path_topic: "/optimized_path"
+    optimized_keyframes_topic: "/optimized_keyframes"
+    timing_topic: "/lcd_pgo_timing"
+    map_frame: "map"
+    odom_frame: "odom"
+    # true: publish the cached PGO correction; false: keep publishing an
+    # identity map->odom so the TF tree remains connected without correction.
+    publish_map_to_odom: true
+    # Republish either the correction or identity so TF queries remain valid
+    # between sparse keyframes and after a bag has advanced in time.
+    map_to_odom_publish_rate_hz: 20.0
+    # Deprecated alias retained for older launch files.
+    marker_frame: "map"
+    body_frame: "body"
+    lidar_frame: "livox_frame"
+    t_body_lidar: [-0.011, -0.02329, 0.04412]
+    q_body_lidar: [1.0, 0.0, 0.0, 0.0]
+    T_body_lidar:
+      [
+        1.0,
+        0.0,
+        0.0,
+        -0.011,
+        0.0,
+        1.0,
+        0.0,
+        -0.02329,
+        0.0,
+        0.0,
+        1.0,
+        0.04412,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+      ]
+    gravity_align_enable: true
+    gravity_align_source: "imu_average" # imu_average / manual_rpy
+    gravity_align_imu_topic: "/livox/imu"
+    gravity_align_sample_sec: 5.0
+    gravity_align_acc_scale: 9.80665
+    # Garage bag reference from the first 20s IMU average:
+    # approximately [-15.23, -6.20, 0.83] degrees.
+    gravity_align_manual_rpy_deg: [0.0, 0.0, 0.0]
+    gravity_align_apply_to_descriptor: true
+    gravity_align_apply_to_pgo: true
+    gravity_align_apply_to_map: true
+    keyframe_exclusion_box_enable: true
+    keyframe_exclusion_min_x: -3.0
+    keyframe_exclusion_max_x: -0.2
+    keyframe_exclusion_min_y: -1.2
+    keyframe_exclusion_max_y: 1.2
+    keyframe_exclusion_min_z: -0.1
+    keyframe_exclusion_max_z: 2.0
+    kf_trans_thresh: 1.5
+    kf_rot_thresh: 0.3
+    min_kf_interval_sec: 0.5
+    min_cloud_points: 10
+    loop_enable: true
+    # LCD history eligibility gates; both must pass before Iris/Cart matching.
+    # Minimum raw keyframe message ID gap (not the number of stored backend keyframes).
+    loop_min_keyframe_gap: 20
+    # Minimum accumulated odometry travel from history to current, in meters.
+    loop_min_travel_distance: 24.0
+    loop_iris_distance_thresh: 0.35 # IRIS DIST GATE
+    loop_gicp_enable: true
+    # Mean squared nearest-neighbor distance inside max correspondence range.
+    loop_gicp_score_thresh: 0.5 # BOUNDED GICP SCORE GATE
+    loop_gicp_max_correction_trans: 2.5
+    loop_gicp_max_correction_rot_deg: 25.0
+    loop_gicp_selection_correction_trans_weight: 0.1
+    loop_gicp_selection_correction_rot_weight: 0.0
+    loop_gicp_use_submap: true
+    loop_gicp_submap_keyframes: 7
+    loop_gicp_submap_leaf_size: 0.15
+    loop_gicp_num_threads: 4
+    loop_gicp_correspondence_randomness: 20
+    loop_gicp_max_correspondence_distance: 1.5
+    loop_gicp_max_iterations: 40
+    loop_gicp_rotation_epsilon: 0.002
+    loop_gicp_transformation_epsilon: 0.001
+    # A finite transform is not enough: loop GICP must converge with enough overlap.
+    loop_gicp_min_inliers: 100
+    loop_gicp_min_inlier_ratio: 0.05
+    pgo_enable: true
+    pgo_optimize_on_loop: true
+    pgo_max_iterations: 20
+    pgo_odom_edge_weight: 150.0
+    # Scalar weights are compatibility fallbacks when a 6D diag below is invalid.
+    pgo_loop_edge_weight: 120.0
+    # Add a loop edge only when both the raw current ID gap and travel gap pass.
+    loop_edge_min_current_gap: 15
+    loop_edge_min_travel_gap: 3.0 # meters along the odometry trajectory
+    # Information matrix diagonal order: [x, y, z, roll, pitch, yaw].
+    # Higher value means stronger trust in that DoF.
+    pgo_odom_info_diag: [350.0, 350.0, 150.0, 140.0, 140.0, 400.0]
+    # In gravity_preserving mode, loops mainly constrain x/y/yaw. Keep the
+    # long-range z/roll/pitch pseudo-measurements weak and let odom preserve them.
+    pgo_loop_info_diag: [120.0, 120.0, 10.0, 5.0, 5.0, 160.0]
+    pgo_loop_info_dynamic_enable: true
+    # Calibrated for bounded GICP score: score~=0.03 uses the base information;
+    # larger scores are downweighted, and very low scores are not amplified.
+    pgo_loop_info_score_ref: 0.03
+    pgo_loop_info_score_floor: 0.01
+    pgo_loop_info_min_scale: 0.2
+    pgo_loop_info_max_scale: 1.0
+    pgo_loop_robust_kernel_enable: true
+    pgo_loop_robust_kernel_delta: 1.0
+    # gravity_preserving uses GICP x/y/yaw but keeps frontend z/roll/pitch.
+    # Set full_se3 only when the loop registration is reliable in all 6 DoF.
+    pgo_loop_measurement_mode: "gravity_preserving"
+    lcd_retrieval_enable: true
+    lcd_retrieval_top_k: 120
+    lcd_retrieval_max_distance: -1.0
+    iris_nscale: 4
+    iris_min_wave_length: 18
+    iris_mult: 1.6
+    iris_sigma_onf: 0.75
+    iris_match_num: 2
+    iris_submap_enable: true
+    iris_submap_keyframes: 5
+    iris_submap_voxel_leaf_m: 0.25
+    cart_enable: true
+    cart_x_unit_m: 2.5
+    cart_y_unit_m: 1.0
+    cart_x_max_m: 50.0
+    cart_y_max_m: 25.0
+    cart_voxel_leaf_m: 0.0
+    cart_height_offset_m: 0.8
+    cart_use_align_key: true
+    cart_align_search_ratio: 0.04
+    cart_candidate_top_k: 10
+    loop_descriptor_verify_top_k: 5
+    cart_distance_thresh: 0.40 # CART DIST GATE

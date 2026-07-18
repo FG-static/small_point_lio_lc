@@ -1,0 +1,98 @@
+digraph SmallPointLioDataFlow {
+  graph [
+    rankdir=TB,
+    bgcolor="white",
+    pad=0.25,
+    nodesep=0.45,
+    ranksep=0.55,
+    splines=polyline,
+    fontname="DejaVu Sans"
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="DejaVu Sans",
+    fontsize=11,
+    margin="0.12,0.08",
+    color="#334155",
+    fillcolor="#f8fafc",
+    fontcolor="#0f172a"
+  ];
+
+  edge [
+    fontname="DejaVu Sans",
+    fontsize=10,
+    color="#475569",
+    fontcolor="#334155",
+    arrowsize=0.8
+  ];
+
+  subgraph cluster_input {
+    label="ROS 2 input";
+    color="#cbd5e1";
+    style="rounded";
+    lidar_topic [label="LiDAR topic\n/livox/lidar or configured topic"];
+    imu_topic [label="IMU topic\n/livox/imu or configured topic"];
+    lidar_adapter [label="LidarAdapterBase\nlivox/custom_mid360/unilidar"];
+    imu_callback [label="IMU callback\nconvert sensor_msgs::Imu"];
+  }
+
+  subgraph cluster_preprocess {
+    label="Preprocess";
+    color="#cbd5e1";
+    style="rounded";
+    point_filter [label="Point cloud preprocessing\nrange filter + point_filter_num"];
+    downsample [label="Optional voxel downsample\nspace_downsample_leaf_size"];
+    sort_queue [label="Timestamp sort and queues\npoint_deque + dense_point_deque"];
+    imu_queue [label="IMU timestamp check\nimu_deque"];
+  }
+
+  subgraph cluster_core {
+    label="SmallPointLio::handle_once()";
+    color="#cbd5e1";
+    style="rounded";
+    init_check [shape=diamond, label="Initialized?"];
+    init_map [label="Initialize\nSmallIVox map + gravity + KF time"];
+    time_merge [label="Timestamp-ordered loop\ncompare dense point / filtered point / IMU"];
+    dense_collect [label="Dense point branch\ntransform to odom frame"];
+    imu_update [label="IMU branch\npredict_state + predict_cov + update_imu"];
+    point_update [label="Point branch\npredict_state + update_point"];
+    plane_match [label="Estimator::h_point\nnearest 5 points + plane residual"];
+    map_update [label="Incremental map update\nivox->add_point(point_odom_frame)"];
+  }
+
+  subgraph cluster_output {
+    label="ROS 2 output";
+    color="#cbd5e1";
+    style="rounded";
+    odom_callback [label="Odometry callback\nstate -> odom/base_link"];
+    publish_odom [label="Publish /Odometry\nbroadcast TF odom -> base_link"];
+    publish_path [label="Publish /path"];
+    cloud_callback [label="Pointcloud callback\nregistered cloud in odom"];
+    publish_cloud [label="Publish /cloud_registered"];
+    save_map [label="Optional map_save service\nPointcloudMapping -> pcd/scan.pcd"];
+  }
+
+  lidar_topic -> lidar_adapter -> point_filter -> downsample -> sort_queue -> init_check;
+  imu_topic -> imu_callback -> imu_queue -> init_check;
+  init_check -> init_map [label="no, enough initial data"];
+  init_map -> time_merge;
+  init_check -> time_merge [label="yes"];
+  sort_queue -> time_merge;
+  imu_queue -> time_merge;
+
+  time_merge -> dense_collect [label="dense point earliest"];
+  time_merge -> point_update [label="filtered point earliest"];
+  time_merge -> imu_update [label="IMU earliest"];
+  point_update -> plane_match -> map_update -> time_merge;
+  imu_update -> time_merge;
+  dense_collect -> time_merge;
+
+  time_merge -> odom_callback [label="publish batch"];
+  odom_callback -> publish_odom;
+  odom_callback -> publish_path;
+  time_merge -> cloud_callback [label="dense cloud ready"];
+  cloud_callback -> publish_cloud;
+  cloud_callback -> save_map [label="save_pcd=true"];
+}

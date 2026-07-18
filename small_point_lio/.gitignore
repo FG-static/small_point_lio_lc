@@ -1,0 +1,6 @@
+/build/
+/install/
+/log/
+/.cache
+*.pcd
+/.codegraph

@@ -1,0 +1,27 @@
+# ROS 2 / colcon build products
+build/
+install/
+log/
+
+# Runtime data and generated maps
+rosbag/
+*.bag
+*.db3
+*.mcap
+*.sqlite3
+*.pcd
+
+# Local tooling and editor state
+.codegraph/
+.cache/
+.claude/
+.vscode/
+.idea/
+compile_commands.json
+__pycache__/
+*.py[cod]
+
+# Generic temporary files
+*.log
+*.tmp
+*~
