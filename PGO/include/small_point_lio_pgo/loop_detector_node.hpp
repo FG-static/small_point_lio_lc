@@ -1,5 +1,5 @@
-#ifndef SMALL_DLIO__LOOP_DETECTOR_NODE_HPP
-#define SMALL_DLIO__LOOP_DETECTOR_NODE_HPP
+#ifndef SMALL_POINT_LIO_PGO__LOOP_DETECTOR_NODE_HPP
+#define SMALL_POINT_LIO_PGO__LOOP_DETECTOR_NODE_HPP
 
 #include "LidarIris.h"
 #include "cart_context.hpp"
@@ -363,7 +363,7 @@ namespace small_point_lio_pgo {
         double loop_gicp_transformation_epsilon_ = 1e-3;
         int loop_gicp_min_inliers_ = 100;
         double loop_gicp_min_inlier_ratio_ = 0.05;
-        std::string body_frame_ = "body";
+        std::string body_frame_ = "base_link";
         std::string lidar_frame_ = "livox_frame";
         Eigen::Isometry3d T_body_lidar_ = Eigen::Isometry3d::Identity();
         Eigen::Isometry3d T_lidar_body_ = Eigen::Isometry3d::Identity();
@@ -466,4 +466,4 @@ namespace small_point_lio_pgo {
 
 } // namespace small_point_lio_pgo
 
-#endif // SMALL_DLIO__LOOP_DETECTOR_NODE_HPP
+#endif  // SMALL_POINT_LIO_PGO__LOOP_DETECTOR_NODE_HPP

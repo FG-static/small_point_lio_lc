@@ -1,5 +1,5 @@
-#ifndef SMALL_DLIO__GICP_HPP
-#define SMALL_DLIO__GICP_HPP
+#ifndef SMALL_POINT_LIO_PGO__GICP_HPP
+#define SMALL_POINT_LIO_PGO__GICP_HPP
 
 #include "small_gicp_compat.hpp"
 
@@ -68,4 +68,4 @@ namespace small_point_lio_pgo {
 
 } // namespace small_point_lio_pgo
 
-#endif // SMALL_DLIO__GICP_HPP
+#endif  // SMALL_POINT_LIO_PGO__GICP_HPP

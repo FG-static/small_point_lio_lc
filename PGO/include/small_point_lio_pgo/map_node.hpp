@@ -1,5 +1,5 @@
-#ifndef SMALL_DLIO__MAP_NODE
-#define SMALL_DLIO__MAP_NODE
+#ifndef SMALL_POINT_LIO_PGO__MAP_NODE_HPP
+#define SMALL_POINT_LIO_PGO__MAP_NODE_HPP
 
 #include <Eigen/Geometry>
 
@@ -86,7 +86,7 @@ namespace small_point_lio_pgo {
         std::string optimized_keyframes_topic_ = "/optimized_keyframes";
         std::string save_map_service_name_ = "/save_map";
         std::string map_save_path_ = "/home/goose/small_point_lio_lc/global_map.pcd";
-        std::string body_frame_ = "body";
+        std::string body_frame_ = "base_link";
         std::string lidar_frame_ = "livox_frame";
         bool rebuild_unoptimized_keyframes_with_approximation_ = true;
         bool apply_pgo_correction_to_unoptimized_keyframes_ = true;
@@ -94,4 +94,4 @@ namespace small_point_lio_pgo {
     };
 } // small_point_lio_pgo
 
-#endif // SMALL_DLIO__MAP_NODE
+#endif  // SMALL_POINT_LIO_PGO__MAP_NODE_HPP

@@ -120,6 +120,11 @@ add_executable(map_node
   src/map_node.cpp
 )
 
+add_executable(keyframe_bridge_node
+  src/small_point_lio_keyframe_bridge_main.cpp
+  src/small_point_lio_keyframe_bridge.cpp
+)
+
 rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} rosidl_typesupport_cpp
 )
@@ -148,11 +153,25 @@ target_include_directories(map_node
     ${PCL_INCLUDE_DIRS}
 )
 
+target_include_directories(keyframe_bridge_node
+  PRIVATE
+    include
+    ${PCL_INCLUDE_DIRS}
+)
+
 ament_target_dependencies(map_node
   rclcpp
   sensor_msgs
   std_srvs
   geometry_msgs
+  pcl_conversions
+)
+
+ament_target_dependencies(keyframe_bridge_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  nav_msgs
   pcl_conversions
 )
 
@@ -172,9 +191,16 @@ target_link_libraries(map_node
   "${cpp_typesupport_target}"
 )
 
+target_link_libraries(keyframe_bridge_node
+  Eigen3::Eigen
+  ${PCL_LIBRARIES}
+  "${cpp_typesupport_target}"
+)
+
 install(TARGETS
   loop_detector_node
   map_node
+  keyframe_bridge_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -184,6 +210,10 @@ install(DIRECTORY config/
 
 install(DIRECTORY rviz_cfg/
   DESTINATION share/${PROJECT_NAME}/rviz_cfg
+)
+
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 install(FILES LICENSE

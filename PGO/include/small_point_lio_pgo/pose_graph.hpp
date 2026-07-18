@@ -1,5 +1,5 @@
-#ifndef SMALL_DLIO__POSE_GRAPH_HPP
-#define SMALL_DLIO__POSE_GRAPH_HPP
+#ifndef SMALL_POINT_LIO_PGO__POSE_GRAPH_HPP
+#define SMALL_POINT_LIO_PGO__POSE_GRAPH_HPP
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -127,4 +127,4 @@ namespace small_point_lio_pgo {
 
 } // namespace small_point_lio_pgo
 
-#endif // SMALL_DLIO__POSE_GRAPH_HPP
+#endif  // SMALL_POINT_LIO_PGO__POSE_GRAPH_HPP

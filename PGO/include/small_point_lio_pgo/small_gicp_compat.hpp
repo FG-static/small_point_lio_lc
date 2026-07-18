@@ -1,5 +1,5 @@
-#ifndef SMALL_DLIO__SMALL_GICP_COMPAT_HPP
-#define SMALL_DLIO__SMALL_GICP_COMPAT_HPP
+#ifndef SMALL_POINT_LIO_PGO__SMALL_GICP_COMPAT_HPP
+#define SMALL_POINT_LIO_PGO__SMALL_GICP_COMPAT_HPP
 
 #include <unordered_map>
 
@@ -48,4 +48,4 @@ struct Serializer<std::unordered_map<K, V>>
 #include <small_gicp/pcl/pcl_registration.hpp>
 #include <small_gicp/registration/registration.hpp>
 
-#endif  // SMALL_DLIO__SMALL_GICP_COMPAT_HPP
+#endif  // SMALL_POINT_LIO_PGO__SMALL_GICP_COMPAT_HPP

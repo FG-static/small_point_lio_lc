@@ -1,7 +1,7 @@
 small_point_lio_pgo_loop_detector:
   ros__parameters:
-    keyframe_topic: "/keyframe_msg"
-    filtered_keyframe_topic: ""
+    keyframe_topic: "/keyframe_candidates"
+    filtered_keyframe_topic: "/keyframe_msg"
     marker_topic: "/loop_candidates_marker"
     optimized_path_topic: "/optimized_path"
     optimized_keyframes_topic: "/optimized_keyframes"
@@ -16,7 +16,7 @@ small_point_lio_pgo_loop_detector:
     map_to_odom_publish_rate_hz: 20.0
     # Deprecated alias retained for older launch files.
     marker_frame: "map"
-    body_frame: "body"
+    body_frame: "base_link"
     lidar_frame: "livox_frame"
     t_body_lidar: [-0.011, -0.02329, 0.04412]
     q_body_lidar: [1.0, 0.0, 0.0, 0.0]

@@ -6,7 +6,7 @@ map_node:
         optimized_keyframes_topic: "/optimized_keyframes"
         rebuild_unoptimized_keyframes_with_approximation: true
         apply_pgo_correction_to_unoptimized_keyframes: true
-        body_frame: "body"
+        body_frame: "base_link"
         lidar_frame: "livox_frame"
         t_body_lidar: [-0.011, -0.02329, 0.04412]
         q_body_lidar: [1.0, 0.0, 0.0, 0.0]

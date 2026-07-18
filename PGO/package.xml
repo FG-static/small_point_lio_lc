@@ -26,6 +26,8 @@
 
   <!-- small_gicp (/usr/local) and libg2o-dev are checked by CMake. Ubuntu
        Noble currently provides no rosdep keys for either dependency. -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>
 
