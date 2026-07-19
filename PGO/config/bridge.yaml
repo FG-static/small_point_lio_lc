@@ -2,11 +2,17 @@ small_point_lio_keyframe_bridge:
   ros__parameters:
     odom_topic: "/Odometry"
     cloud_topic: "/cloud_registered"
-    # Every synchronized frontend frame is a candidate. The backend applies
-    # the actual keyframe gate and republishes accepted frames on /keyframe_msg.
+    # Synchronized registered clouds are accumulated into time-windowed
+    # candidates. The backend applies the actual keyframe gate and republishes
+    # accepted frames on /keyframe_msg.
     keyframe_topic: "/keyframe_candidates"
     odom_frame: "odom"
     body_frame: "base_link"
     max_cloud_delay_sec: 0.05
     odom_buffer_duration_sec: 1.0
+    # Match the validated small_dlio behavior: about 10 packets at 100 Hz,
+    # and normally one packet at 10 Hz. Set to 0.0 to disable accumulation.
+    accumulation_time_ms: 100.0
+    # Safety guard for invalid or stalled message timestamps.
+    max_accumulated_clouds: 100
     min_cloud_points: 10

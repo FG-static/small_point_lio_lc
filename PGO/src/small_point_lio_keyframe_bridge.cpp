@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <iterator>
 #include <limits>
 #include <pcl/common/transforms.h>
@@ -21,8 +22,8 @@ namespace small_point_lio_pgo {
 
         loadParams();
 
-        // 桥接节点只同步里程计与注册点云，并完成坐标系转换；
-        // 每条点云消息独立生成候选，不在这里做跨帧点云累积。
+        // 桥接节点先同步里程计与注册点云，再按时间窗口整理成后端候选。
+        // Point-LIO 前端仍按原始频率运行，不会因为后端累积而降频。
         sub_odom_ = create_subscription<nav_msgs::msg::Odometry>(
             odom_topic_,
             rclcpp::QoS(100).reliable(),
@@ -44,15 +45,44 @@ namespace small_point_lio_pgo {
         RCLCPP_INFO(
             get_logger(),
             "Small Point-LIO bridge: odom=%s cloud=%s keyframe=%s "
-            "odom_frame=%s body_frame=%s max_delay=%.3fs buffer=%.3fs",
+            "odom_frame=%s body_frame=%s max_delay=%.3fs buffer=%.3fs "
+            "accumulation=%.1fms max_clouds=%d",
             odom_topic_.c_str(),
             cloud_topic_.c_str(),
             keyframe_topic_.c_str(),
             odom_frame_.c_str(),
             body_frame_.c_str(),
             max_cloud_delay_sec_,
-            odom_buffer_duration_sec_
+            odom_buffer_duration_sec_,
+            accumulation_time_ms_,
+            max_accumulated_clouds_
         );
+    }
+
+    SmallPointLioKeyframeBridge::~SmallPointLioKeyframeBridge() {
+
+        // 与 small_dlio 累积器一致，节点正常退出时尽量发布最后一个
+        // 尚未达到完整时间窗的有效点云窗口。
+        if (!rclcpp::ok() || !accumulation_active_)
+            return;
+
+        try {
+
+            publishAccumulatedCandidate();
+        } catch (const std::exception &error) {
+
+            RCLCPP_WARN(
+                get_logger(),
+                "Failed to publish the final accumulated cloud: %s",
+                error.what()
+            );
+        } catch (...) {
+
+            RCLCPP_WARN(
+                get_logger(),
+                "Failed to publish the final accumulated cloud"
+            );
+        }
     }
 
     void SmallPointLioKeyframeBridge::loadParams() {
@@ -66,6 +96,10 @@ namespace small_point_lio_pgo {
         declare_parameter(
             "odom_buffer_duration_sec", odom_buffer_duration_sec_
         );
+        declare_parameter("accumulation_time_ms", accumulation_time_ms_);
+        declare_parameter(
+            "max_accumulated_clouds", max_accumulated_clouds_
+        );
         declare_parameter("min_cloud_points", min_cloud_points_);
 
         get_parameter("odom_topic", odom_topic_);
@@ -76,6 +110,10 @@ namespace small_point_lio_pgo {
         get_parameter("max_cloud_delay_sec", max_cloud_delay_sec_);
         get_parameter(
             "odom_buffer_duration_sec", odom_buffer_duration_sec_
+        );
+        get_parameter("accumulation_time_ms", accumulation_time_ms_);
+        get_parameter(
+            "max_accumulated_clouds", max_accumulated_clouds_
         );
         get_parameter("min_cloud_points", min_cloud_points_);
 
@@ -94,6 +132,13 @@ namespace small_point_lio_pgo {
         if (!std::isfinite(odom_buffer_duration_sec_) ||
             odom_buffer_duration_sec_ <= 0.0)
             odom_buffer_duration_sec_ = 1.0;
+        if (!std::isfinite(accumulation_time_ms_) ||
+            accumulation_time_ms_ < 0.0)
+            accumulation_time_ms_ = 100.0;
+        accumulation_time_ns_ = static_cast<std::int64_t>(
+            accumulation_time_ms_ * 1e6
+        );
+        max_accumulated_clouds_ = std::max(1, max_accumulated_clouds_);
         min_cloud_points_ = std::max(1, min_cloud_points_);
     }
 
@@ -220,9 +265,11 @@ namespace small_point_lio_pgo {
 
         if (time_reset) {
 
+            resetAccumulation();
             RCLCPP_WARN(
                 get_logger(),
-                "Odometry time moved backwards; reset the bridge buffer"
+                "Odometry time moved backwards; reset synchronization and "
+                "cloud accumulation buffers"
             );
         }
 
@@ -374,13 +421,117 @@ namespace small_point_lio_pgo {
             return;
         }
 
-        publishCandidate(odom.pose.pose, *msg, delay_sec);
+        if (accumulation_time_ns_ <= 0) {
+
+            // 设为 0 时保留旧行为，便于与未累积版本做 A/B 对照。
+            publishCandidate(
+                odom.pose.pose,
+                msg->header.stamp,
+                {msg},
+                delay_sec,
+                0.0
+            );
+            return;
+        }
+
+        accumulateCloud(msg, odom, delay_sec);
+    }
+
+    void SmallPointLioKeyframeBridge::accumulateCloud(
+        const sensor_msgs::msg::PointCloud2::ConstSharedPtr &msg,
+        const nav_msgs::msg::Odometry &odom,
+        double odom_delay_sec
+    ) {
+
+        const std::int64_t stamp_ns = stampToNanoseconds(msg->header.stamp);
+        if (accumulation_active_ &&
+            stamp_ns < accumulation_last_stamp_ns_) {
+
+            // rosbag 跳时或前端时间源重置后，旧窗口不能与新时间段混合。
+            resetAccumulation();
+            RCLCPP_WARN(
+                get_logger(),
+                "Cloud time moved backwards; reset cloud accumulation buffer"
+            );
+        }
+
+        if (accumulation_active_ &&
+            stamp_ns - accumulation_window_start_ns_ >=
+                accumulation_time_ns_) {
+
+            // 与 small_dlio 的累积器相同：越过窗口边界的当前包不放进
+            // 旧窗口，而是先发布旧窗口，再由当前包开启新窗口。
+            publishAccumulatedCandidate();
+        }
+
+        if (!accumulation_active_) {
+
+            accumulation_window_start_ns_ = stamp_ns;
+            accumulation_active_ = true;
+        }
+
+        // /cloud_registered 已处于 odom 系，因此窗口内可直接保存并合并；
+        // 每包对应的 body 坐标系不同，不能逐包转到 body 后直接拼接。
+        accumulated_clouds_.push_back(msg);
+        accumulation_anchor_odom_ = odom;
+        accumulation_anchor_delay_sec_ = odom_delay_sec;
+        accumulation_last_stamp_ns_ = stamp_ns;
+
+        if (accumulated_clouds_.size() >=
+            static_cast<std::size_t>(max_accumulated_clouds_)) {
+
+            RCLCPP_WARN(
+                get_logger(),
+                "Accumulation reached the safety limit of %d clouds; "
+                "publishing the current window",
+                max_accumulated_clouds_
+            );
+            publishAccumulatedCandidate();
+        }
+    }
+
+    void SmallPointLioKeyframeBridge::publishAccumulatedCandidate() {
+
+        if (!accumulation_active_ || accumulated_clouds_.empty()) {
+
+            resetAccumulation();
+            return;
+        }
+
+        const double window_span_ms = static_cast<double>(
+            accumulation_last_stamp_ns_ - accumulation_window_start_ns_
+        ) * 1e-6;
+        const auto stamp = accumulated_clouds_.back()->header.stamp;
+
+        // 末帧里程计是 T_odom_body_end。窗口内所有点仍在统一的 odom
+        // 系，publishCandidate() 会用其逆变换一次性转到末帧 body 系。
+        publishCandidate(
+            accumulation_anchor_odom_.pose.pose,
+            stamp,
+            accumulated_clouds_,
+            accumulation_anchor_delay_sec_,
+            window_span_ms
+        );
+        resetAccumulation();
+    }
+
+    void SmallPointLioKeyframeBridge::resetAccumulation() {
+
+        accumulated_clouds_.clear();
+        accumulation_window_start_ns_ = 0;
+        accumulation_last_stamp_ns_ = 0;
+        accumulation_anchor_delay_sec_ = 0.0;
+        accumulation_active_ = false;
     }
 
     void SmallPointLioKeyframeBridge::publishCandidate(
         const geometry_msgs::msg::Pose &pose,
-        const sensor_msgs::msg::PointCloud2 &cloud,
-        double odom_delay_sec
+        const builtin_interfaces::msg::Time &stamp,
+        const std::vector<
+            sensor_msgs::msg::PointCloud2::ConstSharedPtr
+        > &clouds,
+        double odom_delay_sec,
+        double window_span_ms
     ) {
 
         Eigen::Quaterniond q_odom_body(
@@ -402,7 +553,22 @@ namespace small_point_lio_pgo {
         );
 
         pcl::PointCloud<pcl::PointXYZ> cloud_odom;
-        pcl::fromROSMsg(cloud, cloud_odom);
+        std::size_t expected_points = 0;
+        for (const auto &cloud : clouds) {
+
+            if (cloud)
+                expected_points += pointCount(*cloud);
+        }
+        cloud_odom.reserve(expected_points);
+        for (const auto &cloud : clouds) {
+
+            if (!cloud)
+                continue;
+
+            pcl::PointCloud<pcl::PointXYZ> source_cloud;
+            pcl::fromROSMsg(*cloud, source_cloud);
+            cloud_odom += source_cloud;
+        }
         if (cloud_odom.empty())
             return;
 
@@ -436,9 +602,9 @@ namespace small_point_lio_pgo {
             return;
         }
 
-        // 一帧输入点云对应一个候选；关键帧筛选和全局地图累积由后端节点完成。
+        // 一个时间窗口对应一个候选；关键帧筛选和全局地图累积仍由后端完成。
         small_point_lio_pgo::msg::KeyFrame keyframe;
-        keyframe.header.stamp = cloud.header.stamp;
+        keyframe.header.stamp = stamp;
         keyframe.header.frame_id = odom_frame_;
         keyframe.id = next_candidate_id_++;
         keyframe.pose = pose;
@@ -448,16 +614,19 @@ namespace small_point_lio_pgo {
         keyframe.pose.orientation.z = q_odom_body.z();
         keyframe.alignment_score = 0.0;
         pcl::toROSMsg(cloud_body, keyframe.cloud);
-        keyframe.cloud.header.stamp = cloud.header.stamp;
+        keyframe.cloud.header.stamp = stamp;
         keyframe.cloud.header.frame_id = body_frame_;
 
         pub_keyframe_->publish(keyframe);
 
         RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 2000,
-            "Published keyframe candidate: id=%u points=%zu "
-            "pose=[%.3f %.3f %.3f] odom_delay=%.4fs",
+            "Published keyframe candidate: id=%u clouds=%zu "
+            "window_span=%.1fms points=%zu pose=[%.3f %.3f %.3f] "
+            "odom_delay=%.4fs",
             keyframe.id,
+            clouds.size(),
+            window_span_ms,
             cloud_body.size(),
             pose.position.x,
             pose.position.y,

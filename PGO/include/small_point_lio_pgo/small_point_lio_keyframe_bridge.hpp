@@ -13,6 +13,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace small_point_lio_pgo {
 
@@ -21,6 +22,7 @@ namespace small_point_lio_pgo {
     public:
 
         SmallPointLioKeyframeBridge();
+        ~SmallPointLioKeyframeBridge() override;
 
     private:
 
@@ -35,6 +37,13 @@ namespace small_point_lio_pgo {
         void processCloud(
             const sensor_msgs::msg::PointCloud2::ConstSharedPtr &msg
         );
+        void accumulateCloud(
+            const sensor_msgs::msg::PointCloud2::ConstSharedPtr &msg,
+            const nav_msgs::msg::Odometry &odom,
+            double odom_delay_sec
+        );
+        void publishAccumulatedCandidate();
+        void resetAccumulation();
 
         bool findNearestOdom(
             const builtin_interfaces::msg::Time &stamp,
@@ -43,8 +52,12 @@ namespace small_point_lio_pgo {
         );
         void publishCandidate(
             const geometry_msgs::msg::Pose &pose,
-            const sensor_msgs::msg::PointCloud2 &cloud,
-            double odom_delay_sec
+            const builtin_interfaces::msg::Time &stamp,
+            const std::vector<
+                sensor_msgs::msg::PointCloud2::ConstSharedPtr
+            > &clouds,
+            double odom_delay_sec,
+            double window_span_ms
         );
 
         static std::int64_t stampToNanoseconds(
@@ -66,6 +79,16 @@ namespace small_point_lio_pgo {
         bool has_last_odom_stamp_ = false;
         std::uint32_t next_candidate_id_ = 0;
 
+        // 已同步点云的累积窗口。注册点云始终保留在 odom 系，发布时再用
+        // 窗口末帧位姿统一转换到末帧 body 系。
+        std::vector<sensor_msgs::msg::PointCloud2::ConstSharedPtr>
+            accumulated_clouds_;
+        nav_msgs::msg::Odometry accumulation_anchor_odom_;
+        std::int64_t accumulation_window_start_ns_ = 0;
+        std::int64_t accumulation_last_stamp_ns_ = 0;
+        double accumulation_anchor_delay_sec_ = 0.0;
+        bool accumulation_active_ = false;
+
         rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
         rclcpp::Publisher<small_point_lio_pgo::msg::KeyFrame>::SharedPtr
@@ -78,6 +101,9 @@ namespace small_point_lio_pgo {
         std::string body_frame_ = "base_link";
         double max_cloud_delay_sec_ = 0.05;
         double odom_buffer_duration_sec_ = 1.0;
+        double accumulation_time_ms_ = 100.0;
+        std::int64_t accumulation_time_ns_ = 100000000LL;
+        int max_accumulated_clouds_ = 100;
         int min_cloud_points_ = 10;
     };
 
