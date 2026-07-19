@@ -45,6 +45,12 @@ namespace small_point_lio {
 
         bool publish_odometry_without_downsample = false;
 
+        bool local_map_feedback_enable = false;
+        size_t local_map_tail_journal_max_points = 300000;
+        double local_map_tail_journal_duration_sec = 10.0;
+        double local_map_max_apply_lag_translation_m = 0.10;
+        double local_map_max_apply_lag_rotation_deg = 1.0;
+
         void read_parameters(rclcpp::Node &node);
     };
 

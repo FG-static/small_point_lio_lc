@@ -9,7 +9,10 @@
 #include "common/common.h"
 #include "lidar_adapter/base_lidar.h"
 #include "small_point_lio/small_point_lio.h"
+#include "small_point_lio_interfaces/msg/local_tracking_map.hpp"
+#include "small_point_lio_interfaces/msg/scan_to_map_correction.hpp"
 #include "util/pointcloud_mapping.h"
+#include <geometry_msgs/msg/pose.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <pch.h>
@@ -34,6 +37,12 @@ namespace small_point_lio {
         std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odometry_publisher;
         std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud_publisher;
         std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Path>> path_publisher;
+        std::shared_ptr<rclcpp::Publisher<
+                small_point_lio_interfaces::msg::ScanToMapCorrection>>
+                scan_to_map_correction_publisher;
+        std::shared_ptr<rclcpp::Subscription<
+                small_point_lio_interfaces::msg::LocalTrackingMap>>
+                local_tracking_map_subscription;
         nav_msgs::msg::Path path_msg;
         std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
         std::unique_ptr<tf2_ros::Buffer> tf_buffer;
@@ -41,6 +50,14 @@ namespace small_point_lio {
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_trigger;
         common::Odometry last_odometry;
         std::unique_ptr<util::PointcloudMapping> pointcloud_mapping;
+
+        bool estimator_pose_to_base_pose(
+                const common::Pose3d &estimator_pose,
+                const builtin_interfaces::msg::Time &stamp,
+                const std::string &lidar_frame,
+                geometry_msgs::msg::Pose &base_pose);
+
+        static builtin_interfaces::msg::Time timestamp_to_msg(double timestamp);
 
     public:
         explicit SmallPointLioNode(const rclcpp::NodeOptions &options);

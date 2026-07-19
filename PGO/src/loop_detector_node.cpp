@@ -3281,6 +3281,7 @@ namespace small_point_lio_pgo {
             pgo_ms
         );
         has_pgo_optimized_snapshot_ = true;
+        ++pgo_graph_version_;
         updateMapToOdomFromOptimizedGraph();
         publishOptimizedKeyFrames();
         publishMapToOdom();
@@ -3424,6 +3425,7 @@ namespace small_point_lio_pgo {
 
         small_point_lio_pgo::msg::OptimizedKeyFrames msg;
         msg.header.frame_id = map_frame_;
+        msg.graph_version = pgo_graph_version_;
         msg.ids.reserve(pose_graph_.nodeCount());
         msg.poses.reserve(pose_graph_.nodeCount());
 

@@ -1,0 +1,54 @@
+small_point_lio_local_map_feedback:
+  ros__parameters:
+    correction_topic: "/pointlio_scan_to_map_correction"
+    candidate_topic: "/keyframe_candidates"
+    optimized_topic: "/optimized_keyframes"
+    local_map_topic: "/local_tracking_map"
+    odom_frame: "odom"
+
+    # Every completed LiDAR packet contributes one evidence record. Packet
+    # count, elapsed time, and accepted-update ratio are quality gates only;
+    # the accumulated SE(3) correction below is the normal trigger.
+    evidence_window_packets: 30
+    evidence_window_duration_sec: 0.50
+    evidence_min_packets: 3
+    evidence_min_valid_updates: 100
+    evidence_min_duration_sec: 0.02
+    evidence_min_valid_ratio: 0.02
+    cumulative_trigger_translation_m: 0.15
+    cumulative_trigger_rotation_deg: 2.0
+
+    # A single well-supported packet may bypass the normal accumulation gate.
+    instant_trigger_translation_m: 0.25
+    instant_trigger_rotation_deg: 3.0
+    instant_trigger_min_valid_updates: 50
+
+    # Reject implausibly large scan corrections unless a new PGO map version
+    # explicitly requests reconstruction.
+    max_safe_correction_translation_m: 2.0
+    max_safe_correction_rotation_deg: 30.0
+    optimization_cooldown_sec: 1.0
+    map_apply_timeout_sec: 2.0
+
+    candidate_correction_max_delay_sec: 0.06
+    correction_buffer_duration_sec: 15.0
+    candidate_database_max_keyframes: 5000
+
+    # Only this recent temporal tail is optimized. Older keyframes stay frozen
+    # and are selected spatially around the current pose for the tracking map.
+    active_window_keyframes: 20
+    min_active_keyframes: 3
+    history_search_radius_m: 20.0
+    history_max_keyframes: 80
+    local_graph_max_iterations: 20
+    # [x, y, z, roll, pitch, yaw]
+    local_odom_info_diag: [300.0, 300.0, 150.0, 120.0, 120.0, 300.0]
+
+    map_voxel_leaf_size_m: 0.20
+    map_max_points: 300000
+    map_min_points: 100
+
+    # A common rigid PGO gauge shift is removed by odom anchoring. Rebuild only
+    # when nearby keyframes change relative to that anchor beyond these gates.
+    pgo_deformation_trigger_translation_m: 0.05
+    pgo_deformation_trigger_rotation_deg: 0.5

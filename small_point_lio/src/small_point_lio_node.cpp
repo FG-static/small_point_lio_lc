@@ -11,6 +11,8 @@
 #include "lidar_adapter/livox_pointcloud2.h"
 #include "lidar_adapter/unitree_lidar.h"
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <stdexcept>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace small_point_lio {
@@ -23,6 +25,16 @@ namespace small_point_lio {
         std::string lidar_frame = declare_parameter<std::string>("lidar_frame");
         bool save_pcd = declare_parameter<bool>("save_pcd");
         small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(*this);
+        bool local_map_feedback_enable = false;
+        get_parameter("local_map_feedback_enable", local_map_feedback_enable);
+        const std::string scan_to_map_correction_topic =
+                declare_parameter<std::string>(
+                        "scan_to_map_correction_topic",
+                        "/pointlio_scan_to_map_correction");
+        const std::string local_tracking_map_topic =
+                declare_parameter<std::string>(
+                        "local_tracking_map_topic",
+                        "/local_tracking_map");
         odometry_publisher = create_publisher<nav_msgs::msg::Odometry>("/Odometry", 1000);
         pointcloud_publisher = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 1000);
         path_publisher = create_publisher<nav_msgs::msg::Path>("/path", 1000);
@@ -54,40 +66,32 @@ namespace small_point_lio {
         small_point_lio->set_odometry_callback([this, lidar_frame](const common::Odometry &odometry) {
             last_odometry = odometry;
 
-            builtin_interfaces::msg::Time time_msg;
-            time_msg.sec = std::floor(odometry.timestamp);
-            time_msg.nanosec = static_cast<uint32_t>((odometry.timestamp - time_msg.sec) * 1e9);
+            const builtin_interfaces::msg::Time time_msg =
+                    timestamp_to_msg(odometry.timestamp);
+
+            common::Pose3d estimator_pose;
+            estimator_pose.position = odometry.position;
+            estimator_pose.orientation = odometry.orientation;
+            geometry_msgs::msg::Pose base_pose;
+            if (!estimator_pose_to_base_pose(
+                        estimator_pose, time_msg, lidar_frame, base_pose)) {
+                return;
+            }
 
             geometry_msgs::msg::TransformStamped transform_stamped;
             transform_stamped.header.stamp = time_msg;
             transform_stamped.header.frame_id = "odom";
             transform_stamped.child_frame_id = "base_link";
-            geometry_msgs::msg::TransformStamped base_link_to_lidar_frame_transform;
-            try {
-                base_link_to_lidar_frame_transform = tf_buffer->lookupTransform(lidar_frame, "base_link", time_msg);
-            } catch (tf2::TransformException &ex) {
-                RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "Failed to lookup transform from base_link to %s: %s", lidar_frame.c_str(), ex.what());
-                return;
-            }
-            tf2::Transform tf_lidar_odom_to_lidar_frame;
-            tf_lidar_odom_to_lidar_frame.setOrigin(tf2::Vector3(odometry.position.x(), odometry.position.y(), odometry.position.z()));
-            tf_lidar_odom_to_lidar_frame.setRotation(tf2::Quaternion(odometry.orientation.x(), odometry.orientation.y(), odometry.orientation.z(), odometry.orientation.w()));
-            tf2::Transform tf_base_link_to_lidar_frame;
-            tf2::fromMsg(base_link_to_lidar_frame_transform.transform, tf_base_link_to_lidar_frame);
-            tf2::Transform tf_odom_to_base_link = tf_base_link_to_lidar_frame.inverse() * tf_lidar_odom_to_lidar_frame * tf_base_link_to_lidar_frame;
-            transform_stamped.transform = tf2::toMsg(tf_odom_to_base_link);
+            transform_stamped.transform.translation.x = base_pose.position.x;
+            transform_stamped.transform.translation.y = base_pose.position.y;
+            transform_stamped.transform.translation.z = base_pose.position.z;
+            transform_stamped.transform.rotation = base_pose.orientation;
 
             nav_msgs::msg::Odometry odometry_msg;
             odometry_msg.header.stamp = time_msg;
             odometry_msg.header.frame_id = "odom";
             odometry_msg.child_frame_id = "base_link";
-            odometry_msg.pose.pose.position.x = transform_stamped.transform.translation.x;
-            odometry_msg.pose.pose.position.y = transform_stamped.transform.translation.y;
-            odometry_msg.pose.pose.position.z = transform_stamped.transform.translation.z;
-            odometry_msg.pose.pose.orientation.x = transform_stamped.transform.rotation.x;
-            odometry_msg.pose.pose.orientation.y = transform_stamped.transform.rotation.y;
-            odometry_msg.pose.pose.orientation.z = transform_stamped.transform.rotation.z;
-            odometry_msg.pose.pose.orientation.w = transform_stamped.transform.rotation.w;
+            odometry_msg.pose.pose = base_pose;
 
             // TODO it is lidar_odom->lidar_frame, we need to transform it to odom->base_link
             // odometry_msg.twist.twist.linear.x = odometry.velocity.x();
@@ -184,6 +188,157 @@ namespace small_point_lio {
                 }
             }
         });
+        if (local_map_feedback_enable) {
+            scan_to_map_correction_publisher = create_publisher<
+                    small_point_lio_interfaces::msg::ScanToMapCorrection>(
+                    scan_to_map_correction_topic,
+                    rclcpp::QoS(100).reliable());
+            small_point_lio->set_scan_to_map_correction_callback(
+                    [this, lidar_frame](
+                            const common::ScanToMapCorrection &correction) {
+                        small_point_lio_interfaces::msg::ScanToMapCorrection msg;
+                        msg.header.stamp = timestamp_to_msg(correction.timestamp);
+                        msg.header.frame_id = "odom";
+                        msg.sequence = correction.sequence;
+                        msg.tracking_map_version = correction.tracking_map_version;
+                        if (!estimator_pose_to_base_pose(
+                                    correction.packet_predicted_pose,
+                                    msg.header.stamp,
+                                    lidar_frame,
+                                    msg.packet_predicted_pose) ||
+                            !estimator_pose_to_base_pose(
+                                    correction.epoch_predicted_pose,
+                                    msg.header.stamp,
+                                    lidar_frame,
+                                    msg.epoch_predicted_pose) ||
+                            !estimator_pose_to_base_pose(
+                                    correction.corrected_pose,
+                                    msg.header.stamp,
+                                    lidar_frame,
+                                    msg.corrected_pose)) {
+                            return;
+                        }
+                        msg.attempted_point_updates =
+                                correction.attempted_point_updates;
+                        msg.accepted_point_updates =
+                                correction.accepted_point_updates;
+                        msg.residual_rms = correction.residual_rms;
+                        msg.residual_max_abs = correction.residual_max_abs;
+                        msg.active_map_source_correction_sequence =
+                                correction.active_map_source_correction_sequence;
+                        scan_to_map_correction_publisher->publish(msg);
+                    });
+
+            local_tracking_map_subscription = create_subscription<
+                    small_point_lio_interfaces::msg::LocalTrackingMap>(
+                    local_tracking_map_topic,
+                    rclcpp::QoS(1).reliable(),
+                    [this, lidar_frame](const small_point_lio_interfaces::msg::
+                                   LocalTrackingMap::ConstSharedPtr msg) {
+                        if (msg->header.frame_id != "odom" ||
+                            msg->cloud.header.frame_id != "odom") {
+                            RCLCPP_WARN(
+                                    get_logger(),
+                                    "Ignoring local tracking map outside odom frame");
+                            return;
+                        }
+
+                        common::LocalTrackingMapUpdate update;
+                        update.cutoff_timestamp =
+                                static_cast<double>(msg->header.stamp.sec) +
+                                static_cast<double>(msg->header.stamp.nanosec) *
+                                        1e-9;
+                        update.source_correction_sequence =
+                                msg->source_correction_sequence;
+                        update.source_tracking_map_version =
+                                msg->source_tracking_map_version;
+                        update.target_tracking_map_version =
+                                msg->target_tracking_map_version;
+                        update.pgo_graph_version = msg->pgo_graph_version;
+                        update.anchor_candidate_id = msg->anchor_candidate_id;
+                        update.points_odom.reserve(
+                                static_cast<size_t>(msg->cloud.width) *
+                                static_cast<size_t>(msg->cloud.height));
+
+                        // /Odometry and /cloud_registered use the existing
+                        // base-link odom convention, while the estimator's
+                        // iVox stores points in its internal LiDAR-odom basis.
+                        // Undo the same static basis transform used by the
+                        // registered-cloud publisher before rebuilding iVox.
+                        geometry_msgs::msg::TransformStamped lidar_from_base_msg;
+                        try {
+                            lidar_from_base_msg = tf_buffer->lookupTransform(
+                                    lidar_frame,
+                                    "base_link",
+                                    msg->header.stamp);
+                        } catch (const tf2::TransformException &error) {
+                            RCLCPP_WARN(
+                                    get_logger(),
+                                    "Ignoring local tracking map without base-to-lidar transform: %s",
+                                    error.what());
+                            return;
+                        }
+                        const Eigen::Quaternionf lidar_from_base_quaternion(
+                                static_cast<float>(
+                                        lidar_from_base_msg.transform.rotation.w),
+                                static_cast<float>(
+                                        lidar_from_base_msg.transform.rotation.x),
+                                static_cast<float>(
+                                        lidar_from_base_msg.transform.rotation.y),
+                                static_cast<float>(
+                                        lidar_from_base_msg.transform.rotation.z));
+                        if (!lidar_from_base_quaternion.coeffs().allFinite() ||
+                            lidar_from_base_quaternion.norm() <= 1e-6F) {
+                            RCLCPP_WARN(
+                                    get_logger(),
+                                    "Ignoring local tracking map with invalid base-to-lidar transform");
+                            return;
+                        }
+                        const Eigen::Matrix3f lidar_from_base_rotation =
+                                lidar_from_base_quaternion.normalized()
+                                        .toRotationMatrix();
+                        const Eigen::Vector3f lidar_from_base_translation(
+                                static_cast<float>(
+                                        lidar_from_base_msg.transform.translation.x),
+                                static_cast<float>(
+                                        lidar_from_base_msg.transform.translation.y),
+                                static_cast<float>(
+                                        lidar_from_base_msg.transform.translation.z));
+                        try {
+                            sensor_msgs::PointCloud2ConstIterator<float> iter_x(
+                                    msg->cloud, "x");
+                            sensor_msgs::PointCloud2ConstIterator<float> iter_y(
+                                    msg->cloud, "y");
+                            sensor_msgs::PointCloud2ConstIterator<float> iter_z(
+                                    msg->cloud, "z");
+                            for (; iter_x != iter_x.end();
+                                 ++iter_x, ++iter_y, ++iter_z) {
+                                const Eigen::Vector3f point_external_odom(
+                                        *iter_x, *iter_y, *iter_z);
+                                if (point_external_odom.allFinite()) {
+                                    update.points_odom.push_back(
+                                            lidar_from_base_rotation *
+                                                    point_external_odom +
+                                            lidar_from_base_translation);
+                                }
+                            }
+                        } catch (const std::runtime_error &error) {
+                            RCLCPP_WARN(
+                                    get_logger(),
+                                    "Ignoring malformed local tracking cloud: %s",
+                                    error.what());
+                            return;
+                        }
+                        small_point_lio->queue_local_tracking_map(
+                                std::move(update));
+                    });
+
+            RCLCPP_INFO(
+                    get_logger(),
+                    "Local-map feedback enabled: correction=%s map=%s",
+                    scan_to_map_correction_topic.c_str(),
+                    local_tracking_map_topic.c_str());
+        }
         if (lidar_type == "livox_custom_msg") {
 #ifdef HAVE_LIVOX_DRIVER
             lidar_adapter = std::make_unique<LivoxCustomMsgAdapter>();
@@ -218,6 +373,69 @@ namespace small_point_lio {
                     small_point_lio->on_imu_callback(imu_msg);
                     small_point_lio->handle_once();
                 });
+    }
+
+    bool SmallPointLioNode::estimator_pose_to_base_pose(
+            const common::Pose3d &estimator_pose,
+            const builtin_interfaces::msg::Time &stamp,
+            const std::string &lidar_frame,
+            geometry_msgs::msg::Pose &base_pose) {
+        geometry_msgs::msg::TransformStamped lidar_from_base_msg;
+        try {
+            lidar_from_base_msg =
+                    tf_buffer->lookupTransform(lidar_frame, "base_link", stamp);
+        } catch (const tf2::TransformException &error) {
+            RCLCPP_ERROR(
+                    get_logger(),
+                    "Failed to lookup transform from base_link to %s: %s",
+                    lidar_frame.c_str(),
+                    error.what());
+            return false;
+        }
+
+        Eigen::Quaterniond orientation = estimator_pose.orientation;
+        if (!estimator_pose.position.allFinite() ||
+            !orientation.coeffs().allFinite() || orientation.norm() <= 1e-9) {
+            return false;
+        }
+        orientation.normalize();
+
+        tf2::Transform estimator_transform;
+        estimator_transform.setOrigin(tf2::Vector3(
+                estimator_pose.position.x(),
+                estimator_pose.position.y(),
+                estimator_pose.position.z()));
+        estimator_transform.setRotation(tf2::Quaternion(
+                orientation.x(),
+                orientation.y(),
+                orientation.z(),
+                orientation.w()));
+        tf2::Transform lidar_from_base;
+        tf2::fromMsg(lidar_from_base_msg.transform, lidar_from_base);
+
+        // Keep exactly the same estimator-to-base convention used by the
+        // published /Odometry path so correction and keyframe poses share a
+        // coordinate contract.
+        const tf2::Transform odom_from_base =
+                lidar_from_base.inverse() * estimator_transform *
+                lidar_from_base;
+        const geometry_msgs::msg::Transform transform_msg =
+                tf2::toMsg(odom_from_base);
+        base_pose.position.x = transform_msg.translation.x;
+        base_pose.position.y = transform_msg.translation.y;
+        base_pose.position.z = transform_msg.translation.z;
+        base_pose.orientation = transform_msg.rotation;
+        return true;
+    }
+
+    builtin_interfaces::msg::Time SmallPointLioNode::timestamp_to_msg(
+            const double timestamp) {
+        builtin_interfaces::msg::Time result;
+        result.sec = static_cast<int32_t>(std::floor(timestamp));
+        result.nanosec = static_cast<uint32_t>(
+                std::max(0.0, timestamp - static_cast<double>(result.sec)) *
+                1e9);
+        return result;
     }
 
 }// namespace small_point_lio

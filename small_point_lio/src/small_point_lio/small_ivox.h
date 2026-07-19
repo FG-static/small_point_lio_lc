@@ -37,9 +37,13 @@ namespace small_point_lio {
 
         bool add_point(const Eigen::Vector3f &point_to_add);
 
+        size_t add_points(const std::vector<Eigen::Vector3f> &points_to_add);
+
         void get_closest_point(const Eigen::Vector3f &pt, std::vector<Eigen::Vector3f> &closest_pt, size_t max_num = 5);
 
         [[nodiscard]] Eigen::Matrix<uint16_t, 3, 1> get_position_index(const Eigen::Vector3f &pt) const;
+
+        [[nodiscard]] size_t size() const;
     };
 
     inline __attribute__((always_inline)) uint64_t hash_position_index(const Eigen::Matrix<uint16_t, 3, 1> &v) {
@@ -141,6 +145,20 @@ namespace small_point_lio {
             }
             return true;
         }
+    }
+
+    inline size_t SmallIVox::add_points(const std::vector<Eigen::Vector3f> &points_to_add) {
+        size_t inserted = 0;
+        for (const auto &point: points_to_add) {
+            if (point.allFinite() && add_point(point)) {
+                ++inserted;
+            }
+        }
+        return inserted;
+    }
+
+    [[nodiscard]] inline size_t SmallIVox::size() const {
+        return grids_map.size();
     }
 
     [[nodiscard]] inline __attribute__((always_inline)) Eigen::Matrix<uint16_t, 3, 1> SmallIVox::get_position_index(const Eigen::Vector3f &pt) const {

@@ -120,11 +120,14 @@ namespace small_point_lio {
             }
         }
 
-        inline bool update_point() {
+        inline bool update_point(state::value_type *residual = nullptr) {
             point_measurement_result measurement_result;
             h_point(x, measurement_result);
             if (!measurement_result.valid) {
                 return false;
+            }
+            if (residual != nullptr) {
+                *residual = measurement_result.z;
             }
             Eigen::Matrix<state::value_type, state::DIM, 1> PHT = P.template block<state::DIM, 12>(0, 0) * measurement_result.H.transpose();
             state::value_type temp = measurement_result.H * PHT.topRows(12) + measurement_result.laser_point_cov;

@@ -52,6 +52,7 @@ find_package(nav_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(small_point_lio_interfaces REQUIRED)
 find_package(livox_ros_driver2 QUIET)
 if(OPENMP_FOUND)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
@@ -94,6 +95,7 @@ ament_target_dependencies(${PROJECT_NAME}
     tf2_ros
     tf2_geometry_msgs
     std_srvs
+    small_point_lio_interfaces
 )
 if(livox_ros_driver2_FOUND)
     ament_target_dependencies(${PROJECT_NAME}
@@ -111,12 +113,32 @@ rclcpp_components_register_node(${PROJECT_NAME}
 #############
 
 if(BUILD_TESTING)
+    find_package(ament_cmake_gtest REQUIRED)
     find_package(ament_lint_auto REQUIRED)
     list(APPEND AMENT_LINT_AUTO_EXCLUDE
         ament_cmake_copyright
         ament_cmake_uncrustify
     )
     ament_lint_auto_find_test_dependencies()
+
+    ament_add_gtest(local_tracking_map_test
+        test/local_tracking_map_test.cpp
+    )
+    if(TARGET local_tracking_map_test)
+        target_include_directories(local_tracking_map_test PRIVATE
+            include
+            3rdparty
+            src
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+        )
+        target_link_libraries(local_tracking_map_test
+            ${PROJECT_NAME}
+            Eigen3::Eigen
+        )
+        ament_target_dependencies(local_tracking_map_test
+            rclcpp
+        )
+    endif()
 endif()
 
 #############

@@ -48,3 +48,12 @@ small_point_lio:
 
         # 数据发布
         publish_odometry_without_downsample: false  # 是否发布高频的里程计，需要注意的是这并不能提高里程计的实时性，反而会导致性能下降，建议通过增加点云发布频率来获得高频和高实时性的里程计
+
+        # 局部历史一致性反馈（默认关闭，使用 PGO 反馈 launch 覆盖开启）
+        local_map_feedback_enable: false
+        scan_to_map_correction_topic: "/pointlio_scan_to_map_correction"
+        local_tracking_map_topic: "/local_tracking_map"
+        local_map_tail_journal_max_points: 300000
+        local_map_tail_journal_duration_sec: 10.0
+        local_map_max_apply_lag_translation_m: 0.10
+        local_map_max_apply_lag_rotation_deg: 1.0

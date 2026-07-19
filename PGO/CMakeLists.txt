@@ -26,6 +26,7 @@ find_package(pcl_conversions REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(PCL REQUIRED COMPONENTS common filters io)
 find_package(small_gicp CONFIG REQUIRED)
+find_package(small_point_lio_interfaces REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 find_library(G2O_CORE_LIBRARY g2o_core REQUIRED)
 find_library(G2O_STUFF_LIBRARY g2o_stuff REQUIRED)
@@ -125,6 +126,14 @@ add_executable(keyframe_bridge_node
   src/small_point_lio_keyframe_bridge.cpp
 )
 
+add_library(small_point_lio_pgo_local_feedback STATIC
+  src/local_map_feedback_node.cpp
+)
+
+add_executable(local_map_feedback_node
+  src/local_map_feedback_main.cpp
+)
+
 rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} rosidl_typesupport_cpp
 )
@@ -159,6 +168,12 @@ target_include_directories(keyframe_bridge_node
     ${PCL_INCLUDE_DIRS}
 )
 
+target_include_directories(small_point_lio_pgo_local_feedback
+  PUBLIC
+    include
+    ${PCL_INCLUDE_DIRS}
+)
+
 ament_target_dependencies(map_node
   rclcpp
   sensor_msgs
@@ -173,6 +188,14 @@ ament_target_dependencies(keyframe_bridge_node
   geometry_msgs
   nav_msgs
   pcl_conversions
+)
+
+ament_target_dependencies(small_point_lio_pgo_local_feedback
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  pcl_conversions
+  small_point_lio_interfaces
 )
 
 target_link_libraries(loop_detector_node
@@ -197,10 +220,48 @@ target_link_libraries(keyframe_bridge_node
   "${cpp_typesupport_target}"
 )
 
+target_link_libraries(small_point_lio_pgo_local_feedback
+  Eigen3::Eigen
+  ${PCL_LIBRARIES}
+  small_point_lio_pgo_pose_graph
+  "${cpp_typesupport_target}"
+)
+
+target_link_libraries(local_map_feedback_node
+  small_point_lio_pgo_local_feedback
+)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(local_map_feedback_node_test
+    test/local_map_feedback_node_test.cpp
+  )
+  if(TARGET local_map_feedback_node_test)
+    target_include_directories(local_map_feedback_node_test
+      PRIVATE
+        include
+        ${PCL_INCLUDE_DIRS}
+    )
+    ament_target_dependencies(local_map_feedback_node_test
+      rclcpp
+      sensor_msgs
+      geometry_msgs
+      pcl_conversions
+      small_point_lio_interfaces
+    )
+    target_link_libraries(local_map_feedback_node_test
+      small_point_lio_pgo_local_feedback
+      "${cpp_typesupport_target}"
+    )
+  endif()
+endif()
+
 install(TARGETS
   loop_detector_node
   map_node
   keyframe_bridge_node
+  local_map_feedback_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

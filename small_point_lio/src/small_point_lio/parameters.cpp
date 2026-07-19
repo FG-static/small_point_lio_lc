@@ -54,6 +54,27 @@ namespace small_point_lio {
 
         // 数据发布
         publish_odometry_without_downsample = node.declare_parameter<bool>("publish_odometry_without_downsample");
+
+        // 局部历史一致性反馈。默认关闭以保持原始前端行为；启用时前端
+        // 发布包级 scan-to-map 证据，并接受版本化的局部跟踪地图。
+        local_map_feedback_enable =
+                node.declare_parameter<bool>("local_map_feedback_enable", false);
+        local_map_tail_journal_max_points = static_cast<size_t>(std::max<int64_t>(
+                1,
+                node.declare_parameter<int64_t>(
+                        "local_map_tail_journal_max_points", 300000)));
+        local_map_tail_journal_duration_sec = std::max(
+                0.1,
+                node.declare_parameter<double>(
+                        "local_map_tail_journal_duration_sec", 10.0));
+        local_map_max_apply_lag_translation_m = std::max(
+                0.0,
+                node.declare_parameter<double>(
+                        "local_map_max_apply_lag_translation_m", 0.10));
+        local_map_max_apply_lag_rotation_deg = std::max(
+                0.0,
+                node.declare_parameter<double>(
+                        "local_map_max_apply_lag_rotation_deg", 1.0));
     }
 
 }// namespace small_point_lio

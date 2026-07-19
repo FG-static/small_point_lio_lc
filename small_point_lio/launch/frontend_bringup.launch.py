@@ -10,6 +10,9 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     package_share = FindPackageShare("small_point_lio")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    enable_local_map_feedback = LaunchConfiguration(
+        "enable_local_map_feedback"
+    )
     clock_parameter = {
         "use_sim_time": ParameterValue(use_sim_time, value_type=bool)
     }
@@ -30,6 +33,14 @@ def generate_launch_description():
                 "save_pcd",
                 default_value="false",
                 description="Enable the frontend's independent PCD accumulator",
+            ),
+            DeclareLaunchArgument(
+                "enable_local_map_feedback",
+                default_value="false",
+                description=(
+                    "Publish packet correction evidence and accept versioned "
+                    "local tracking maps."
+                ),
             ),
             DeclareLaunchArgument(
                 "params_file",
@@ -56,7 +67,10 @@ def generate_launch_description():
                     {
                         "save_pcd": ParameterValue(
                             LaunchConfiguration("save_pcd"), value_type=bool
-                        )
+                        ),
+                        "local_map_feedback_enable": ParameterValue(
+                            enable_local_map_feedback, value_type=bool
+                        ),
                     },
                 ],
             ),

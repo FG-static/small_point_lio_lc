@@ -412,6 +412,7 @@ namespace small_point_lio_pgo {
         double pgo_loop_robust_kernel_delta_ = 1.0;
         std::string pgo_loop_measurement_mode_ = "gravity_preserving";
         bool has_pgo_optimized_snapshot_ = false;
+        uint64_t pgo_graph_version_ = 0;
 
         // map->odom is a cached global correction. It changes only after a
         // successful PGO run; new frontend keyframes must not reset it.
