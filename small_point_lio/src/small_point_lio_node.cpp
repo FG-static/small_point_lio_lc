@@ -329,6 +329,7 @@ namespace small_point_lio {
                                     error.what());
                             return;
                         }
+                        // 推送到前端节点进行地图校验与重建
                         small_point_lio->queue_local_tracking_map(
                                 std::move(update));
                     });

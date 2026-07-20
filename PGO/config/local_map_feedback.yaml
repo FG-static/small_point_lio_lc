@@ -52,3 +52,9 @@ small_point_lio_local_map_feedback:
     # when nearby keyframes change relative to that anchor beyond these gates.
     pgo_deformation_trigger_translation_m: 0.05
     pgo_deformation_trigger_rotation_deg: 0.5
+
+    # Reason gate switches. Set to false to disable a trigger path.
+    # For PGO-only testing, set instant/normal to false.
+    trigger_pgo_enable: true
+    trigger_instant_enable: true
+    trigger_normal_enable: true

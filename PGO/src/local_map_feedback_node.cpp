@@ -84,6 +84,7 @@ namespace small_point_lio_pgo {
                     optimized_callback(std::move(msg));
                 });
 
+        // 局部地图优化+重建线程
         worker_thread_ = std::thread([this]() { worker_loop(); });
 
         RCLCPP_INFO(
@@ -128,6 +129,14 @@ namespace small_point_lio_pgo {
             [this](
                 const std::string &name,
                 double &value
+            ) {
+                declare_parameter(name, value);
+                get_parameter(name, value);
+            };
+        const auto load_bool =
+            [this](
+                const std::string &name,
+                bool &value
             ) {
                 declare_parameter(name, value);
                 get_parameter(name, value);
@@ -200,6 +209,9 @@ namespace small_point_lio_pgo {
         load_double(
                 "pgo_deformation_trigger_rotation_deg",
                 pgo_deformation_trigger_rotation_deg_);
+        load_bool("trigger_pgo_enable", trigger_pgo_enable_);
+        load_bool("trigger_instant_enable", trigger_instant_enable_);
+        load_bool("trigger_normal_enable", trigger_normal_enable_);
 
         evidence_window_packets_ = std::max(1, evidence_window_packets_);
         evidence_window_duration_sec_ =
@@ -230,6 +242,7 @@ namespace small_point_lio_pgo {
         }
     }
 
+    // 收到若干个 LiDAR 包内有关 scantomap 的矫正信息
     void LocalMapFeedbackNode::correction_callback(
         small_point_lio_interfaces::msg::ScanToMapCorrection::
             ConstSharedPtr msg
@@ -290,6 +303,7 @@ namespace small_point_lio_pgo {
                 )
         ) corrections_.pop_front();
 
+        // candidate 和 correction 是异步到达数据流，两个无论哪个先来最后都做一次联合
         associate_candidate_predictions_locked();
         schedule_if_needed_locked(record);
     }
@@ -358,7 +372,7 @@ namespace small_point_lio_pgo {
     }
 
     void LocalMapFeedbackNode::optimized_callback(
-            small_point_lio_pgo::msg::OptimizedKeyFrames::ConstSharedPtr msg
+        small_point_lio_pgo::msg::OptimizedKeyFrames::ConstSharedPtr msg
     ) {
 
         if (!msg || msg->ids.size() != msg->poses.size() ||
@@ -389,7 +403,7 @@ namespace small_point_lio_pgo {
             );
         optimized_poses_ = std::move(optimized);
         pgo_graph_version_ = incoming_version;
-        pgo_rebuild_pending_ = pgo_rebuild_pending_ || significant;
+        pgo_rebuild_pending_ = pgo_rebuild_pending_ || significant; // 标记表示pgo大幅度变动过
 
         RCLCPP_INFO(
                 get_logger(),
@@ -398,6 +412,7 @@ namespace small_point_lio_pgo {
                 optimized_poses_.size(),
                 significant ? 1 : 0);
 
+        // pgo 处理完后进行一次可重建判断
         if (has_correction_ && !corrections_.empty())
             schedule_if_needed_locked(corrections_.back());
     }
@@ -487,6 +502,7 @@ namespace small_point_lio_pgo {
         }
     }
 
+    // @brief 遍历所有候选关键帧，找到时间上最接近矫正记录的关键帧
     void LocalMapFeedbackNode::associate_candidate_predictions_locked() {
 
         for (auto iter = candidates_.rbegin(); iter != candidates_.rend(); ++ iter) {
@@ -526,6 +542,9 @@ namespace small_point_lio_pgo {
         return true;
     }
 
+    // @brief 使用最新矫正记录收集需优化证据
+    // @param latest 最新的矫正记录
+    // @return LocalMapFeedbackNode::EvidenceSummary 矫正质量摘要
     LocalMapFeedbackNode::EvidenceSummary
         LocalMapFeedbackNode::evidence_summary_locked(
             const CorrectionRecord &latest
@@ -537,6 +556,7 @@ namespace small_point_lio_pgo {
 
             if (iter->tracking_map_version != latest.tracking_map_version)
                 continue;
+            // 证据链包数够了 / 时间超阈值就退出
             if (summary.packet_count >=
                     static_cast<size_t>(evidence_window_packets_) ||
                 latest.stamp - iter->stamp > evidence_window_duration_sec_)
@@ -556,6 +576,7 @@ namespace small_point_lio_pgo {
         return summary;
     }
 
+    // @brief 是否应该重建地图？是则打包为BuildJob丢给工作线程
     bool LocalMapFeedbackNode::schedule_if_needed_locked(
         const CorrectionRecord &latest
     ) {
@@ -638,13 +659,13 @@ namespace small_point_lio_pgo {
                  packet_rotation_deg >= instant_trigger_rotation_deg_);
 
         std::string reason;
-        if (pgo_rebuild_pending_) {
+        if (pgo_rebuild_pending_ && trigger_pgo_enable_) {
 
             reason = "pgo";
-        } else if (instant_trigger) {
+        } else if (instant_trigger && trigger_instant_enable_) {
 
             reason = "instant_scan_correction";
-        } else if (normal_trigger) {
+        } else if (normal_trigger && trigger_normal_enable_) {
 
             reason = "cumulative_scan_correction";
         } else {
@@ -697,6 +718,7 @@ namespace small_point_lio_pgo {
                 optimized_poses_,
                 pgo_graph_version_);
 
+        // 构建局部可调整关键帧容器
         std::vector<const CandidateRecord *> active_candidates;
         active_candidates.reserve(static_cast<size_t>(active_window_keyframes_));
         for (auto iter = candidates_.rbegin(); iter != candidates_.rend(); ++ iter) {
@@ -747,6 +769,7 @@ namespace small_point_lio_pgo {
             static_cast<size_t>(min_active_keyframes_))
             return std::nullopt;
 
+        // 历史关键帧加入冻结容器
         for (const auto &candidate : candidates_) {
 
             if (candidate.stamp > latest.stamp + kTimeEpsilon ||
@@ -913,6 +936,7 @@ namespace small_point_lio_pgo {
         return seeds;
     }
 
+    // @brief 判断差异决定是否需要重建
     bool LocalMapFeedbackNode::pgo_deformation_significant_locked(
             const std::unordered_map<uint32_t, Eigen::Isometry3d> &previous,
             const std::unordered_map<uint32_t, Eigen::Isometry3d> &current
@@ -993,6 +1017,7 @@ namespace small_point_lio_pgo {
             bool publish = false;
             {
                 std::lock_guard<std::mutex> lock(state_mutex_);
+                // 防止旧代次 job 进入
                 const bool current_generation =
                         runtime_generation_ == job.runtime_generation;
                 // A rosbag time reset can queue a new-generation job while an
@@ -1001,10 +1026,12 @@ namespace small_point_lio_pgo {
                 if (current_generation) {
                     build_in_progress_ = false;
                 }
+                // 前端再用同一个地图版本 且 没有在等另一个地图的确认 且 success 且 current_generation
                 if (success && current_generation &&
                     active_tracking_map_version_ ==
                             job.correction.tracking_map_version &&
                     !awaiting_map_apply_) {
+
                     awaiting_map_apply_ = true;
                     awaiting_target_version_ =
                             commit.target_tracking_map_version;
@@ -1014,15 +1041,20 @@ namespace small_point_lio_pgo {
                 } else if (current_generation &&
                            job.pgo_graph_version >
                            applied_pgo_graph_version_) {
-                    pgo_rebuild_pending_ = true;
+
+                    pgo_rebuild_pending_ = true; // 标记待重建
                 }
             }
-            if (publish) {
-                map_publisher_->publish(message);
-            }
+            // 发布地图给前端
+            if (publish) map_publisher_->publish(message);
         }
     }
 
+    // @brief 执行工作
+    // @param job 交付的工作
+    // @param message 重建后的局部地图
+    // @param commit 优化后的位姿
+    // @return bool 是否成功
     bool LocalMapFeedbackNode::execute_build_job(
         const BuildJob &job,
         small_point_lio_interfaces::msg::LocalTrackingMap &message,
@@ -1048,6 +1080,7 @@ namespace small_point_lio_pgo {
             return false;
         }
 
+        // 整理发给前端的地图
         const int64_t stamp_ns = static_cast<int64_t>(
                 std::llround(job.correction.stamp * 1e9));
         message.header.stamp.sec =
@@ -1065,6 +1098,7 @@ namespace small_point_lio_pgo {
         pcl::toROSMsg(*cloud, message.cloud);
         message.cloud.header = message.header;
 
+        // 整理留在后端的优化位姿
         commit.source_correction_sequence = job.correction.sequence;
         commit.source_tracking_map_version =
                 job.correction.tracking_map_version;
@@ -1092,6 +1126,7 @@ namespace small_point_lio_pgo {
         return true;
     }
 
+    // 局部滑窗优化 keyframe
     bool LocalMapFeedbackNode::optimize_active_window(
             const BuildJob &job,
             std::vector<Eigen::Isometry3d> &optimized_poses
@@ -1150,6 +1185,7 @@ namespace small_point_lio_pgo {
             return false;
         }
 
+        // 构建好 PoseGraph 优化
         const PoseGraphOptimizationSummary summary = graph.optimize();
         if (!summary.success) return false;
         optimized_poses.resize(job.active_frames.size());
@@ -1166,6 +1202,7 @@ namespace small_point_lio_pgo {
         return true;
     }
 
+    // 将body系点云通过优化好的位姿变到odom系重建局部跟踪iVox地图
     pcl::PointCloud<pcl::PointXYZ>::Ptr
         LocalMapFeedbackNode::build_tracking_cloud(
             const BuildJob &job,

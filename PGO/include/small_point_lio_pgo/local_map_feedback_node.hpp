@@ -319,6 +319,9 @@ namespace small_point_lio_pgo {
             {300.0, 300.0, 150.0, 120.0, 120.0, 300.0};
         double pgo_deformation_trigger_translation_m_ = 0.05;
         double pgo_deformation_trigger_rotation_deg_ = 0.5;
+        bool trigger_pgo_enable_ = true;
+        bool trigger_instant_enable_ = true;
+        bool trigger_normal_enable_ = true;
     };
 
 }  // namespace small_point_lio_pgo

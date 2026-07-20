@@ -276,6 +276,7 @@ namespace small_point_lio {
         }
     }
 
+    // 每来一个LiDAR包就记录一下包边界时间戳
     void SmallPointLio::register_packet_boundary(
             const std::vector<common::Point> &pointcloud) {
         double packet_end = -std::numeric_limits<double>::infinity();
@@ -299,7 +300,10 @@ namespace small_point_lio {
         last_registered_packet_end = packet_end;
     }
 
+    // boundary 记录的是一段时间内的所有 LiDAR 包的结束时间戳
     bool SmallPointLio::packet_boundary_ready(const double boundary) const {
+        // 累计时间超过 kTimestampEpsilon 阈值
+        // 稀疏、稠密点云 + imu数据均已消费完毕
         const bool points_ready = preprocess.point_deque.empty() ||
                                   preprocess.point_deque.front().timestamp >
                                           boundary + kTimestampEpsilon;
@@ -323,6 +327,7 @@ namespace small_point_lio {
                 break;
             }
 
+            // 三个kf不断积分
             if (time_current < boundary) {
                 estimator.kf.predict_state(boundary);
                 prediction_only_kf.predict_state(boundary);
@@ -341,6 +346,7 @@ namespace small_point_lio {
         const Eigen::Isometry3d epoch_predicted = state_pose(prediction_only_kf.x);
         const Eigen::Isometry3d packet_predicted =
                 state_pose(packet_prediction_kf.x);
+        // 有关 scantomap 的矫正量，如果没有进行 scantomap 则为单位阵
         const Eigen::Isometry3d current_cumulative =
                 corrected * epoch_predicted.inverse();
 
@@ -369,6 +375,7 @@ namespace small_point_lio {
             correction_history.pop_front();
         }
 
+        // 发送矫正 msg 给后端（给 local_map_feedback_node ）
         if (scan_to_map_correction_callback) {
             scan_to_map_correction_callback(correction);
         }
@@ -469,6 +476,7 @@ namespace small_point_lio {
                 queued_map_build = std::move(request);
             }
         }
+        // 唤醒地图重建线程
         map_builder_cv.notify_all();
     }
 
@@ -488,6 +496,7 @@ namespace small_point_lio {
                 queued_map_build.reset();
             }
 
+            // 重建iVox地图
             auto new_ivox = std::make_shared<SmallIVox>(
                     static_cast<float>(parameters.map_resolution),
                     kIvoxCapacity);
