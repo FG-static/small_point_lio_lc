@@ -86,6 +86,7 @@ namespace small_point_lio {
         map_builder_cv.notify_all();
     }
 
+    // LiDAR 包回调
     void SmallPointLio::on_point_cloud_callback(const std::vector<common::Point> &pointcloud) {
         if (is_init && parameters.local_map_feedback_enable) {
             register_packet_boundary(pointcloud);
@@ -280,7 +281,7 @@ namespace small_point_lio {
         double packet_end = -std::numeric_limits<double>::infinity();
         for (const auto &point: pointcloud) {
             if (std::isfinite(point.timestamp)) {
-                packet_end = std::max(packet_end, point.timestamp);
+                packet_end = std::max(packet_end, point.timestamp); // record the end-cloud_point stamp be the packet_end stamp.
             }
         }
         if (!std::isfinite(packet_end)) {

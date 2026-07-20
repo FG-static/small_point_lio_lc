@@ -603,8 +603,10 @@ namespace small_point_lio_pgo {
                 packet_translation > max_safe_correction_translation_m_ ||
                 packet_rotation_deg > max_safe_correction_rotation_deg_;
         if (unsafe && !pgo_rebuild_pending_) {
-            RCLCPP_WARN(
+            RCLCPP_WARN_THROTTLE(
                     get_logger(),
+                    *get_clock(),
+                    2000,
                     "Not feeding back unsafe scan correction: packet=[%.3fm %.2fdeg] "
                     "cumulative=[%.3fm %.2fdeg]",
                     packet_translation,
