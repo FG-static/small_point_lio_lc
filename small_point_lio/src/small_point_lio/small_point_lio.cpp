@@ -564,6 +564,7 @@ namespace small_point_lio {
                 return;
             }
 
+            // 若构建时的corr到最新corr之间的差距太大，说明构建结果不准，直接丢弃，pgo不检查这个
             const Eigen::Isometry3d lag =
                     cumulative_correction() * source_correction.inverse();
             const double lag_translation = lag.translation().norm();
