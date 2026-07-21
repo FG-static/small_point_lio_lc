@@ -256,6 +256,7 @@ namespace small_point_lio {
                                 msg->target_tracking_map_version;
                         update.pgo_graph_version = msg->pgo_graph_version;
                         update.anchor_candidate_id = msg->anchor_candidate_id;
+                        update.trigger_reason = msg->trigger_reason;
                         update.points_odom.reserve(
                                 static_cast<size_t>(msg->cloud.width) *
                                 static_cast<size_t>(msg->cloud.height));

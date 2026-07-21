@@ -1095,6 +1095,7 @@ namespace small_point_lio_pgo {
                 job.correction.tracking_map_version + 1;
         message.pgo_graph_version = job.pgo_graph_version;
         message.anchor_candidate_id = job.active_frames.front().candidate_id;
+        message.trigger_reason = job.trigger_reason;
         pcl::toROSMsg(*cloud, message.cloud);
         message.cloud.header = message.header;
 

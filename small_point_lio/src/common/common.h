@@ -62,6 +62,7 @@ namespace common {
         uint64_t target_tracking_map_version = 0;///< Version assigned after an atomic map swap.
         uint64_t pgo_graph_version = 0;///< Global graph snapshot incorporated by the build.
         uint32_t anchor_candidate_id = 0;///< Fixed oldest node of the local optimization window.
+        std::string trigger_reason;///< Build job trigger reason ("pgo", "instant_scan_correction", "cumulative_scan_correction").
         std::vector<Eigen::Vector3f> points_odom;///< Map points in the estimator's odom basis, in metres.
     };
 

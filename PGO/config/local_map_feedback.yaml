@@ -56,5 +56,5 @@ small_point_lio_local_map_feedback:
     # Reason gate switches. Set to false to disable a trigger path.
     # For PGO-only testing, set instant/normal to false.
     trigger_pgo_enable: true
-    trigger_instant_enable: true
-    trigger_normal_enable: true
+    trigger_instant_enable: false
+    trigger_normal_enable: false
