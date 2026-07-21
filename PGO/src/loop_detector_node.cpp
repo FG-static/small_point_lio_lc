@@ -276,6 +276,10 @@ namespace small_point_lio_pgo {
             "loop_gicp_min_inlier_ratio",
             loop_gicp_min_inlier_ratio_
         );
+        declare_parameter(
+            "loop_gicp_max_registration_error",
+            loop_gicp_max_registration_error_
+        );
         declare_parameter("body_frame", body_frame_);
         declare_parameter("lidar_frame", lidar_frame_);
         declare_parameter("gravity_align_enable", gravity_align_enable_);
@@ -437,6 +441,10 @@ namespace small_point_lio_pgo {
             "loop_gicp_min_inlier_ratio",
             loop_gicp_min_inlier_ratio_
         );
+        get_parameter(
+            "loop_gicp_max_registration_error",
+            loop_gicp_max_registration_error_
+        );
         get_parameter("body_frame", body_frame_);
         get_parameter("lidar_frame", lidar_frame_);
         get_parameter("gravity_align_enable", gravity_align_enable_);
@@ -566,6 +574,9 @@ namespace small_point_lio_pgo {
             loop_gicp_min_inlier_ratio_ = 0.0;
         loop_gicp_min_inlier_ratio_ =
             std::min(loop_gicp_min_inlier_ratio_, 1.0);
+        if (!std::isfinite(loop_gicp_max_registration_error_) ||
+            loop_gicp_max_registration_error_ <= 0.0)
+            loop_gicp_max_registration_error_ = 20000.0;
         if (!std::isfinite(cart_x_unit_m_) || cart_x_unit_m_ <= 0.0)
             cart_x_unit_m_ = 0.5;
         if (!std::isfinite(cart_y_unit_m_) || cart_y_unit_m_ <= 0.0)
@@ -2531,6 +2542,8 @@ namespace small_point_lio_pgo {
                 std::isfinite(trial.result.inlier_ratio) &&
                 trial.result.inlier_ratio >= loop_gicp_min_inlier_ratio_ &&
                 std::isfinite(trial.result.registration_error) &&
+                trial.result.registration_error <=
+                    loop_gicp_max_registration_error_ &&
                 trial.result.hessian.allFinite() &&
                 std::isfinite(trial.correction_trans) &&
                 trial.correction_trans <= loop_gicp_max_correction_trans_ &&

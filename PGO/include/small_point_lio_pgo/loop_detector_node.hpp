@@ -363,6 +363,7 @@ namespace small_point_lio_pgo {
         double loop_gicp_transformation_epsilon_ = 1e-3;
         int loop_gicp_min_inliers_ = 100;
         double loop_gicp_min_inlier_ratio_ = 0.05;
+        double loop_gicp_max_registration_error_ = 20000.0;
         std::string body_frame_ = "base_link";
         std::string lidar_frame_ = "livox_frame";
         Eigen::Isometry3d T_body_lidar_ = Eigen::Isometry3d::Identity();
