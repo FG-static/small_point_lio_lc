@@ -1026,8 +1026,10 @@ namespace small_point_lio_pgo {
                 if (current_generation) {
                     build_in_progress_ = false;
                 }
-                // 前端再用同一个地图版本 且 没有在等另一个地图的确认 且 success 且 current_generation
+                // Publish only if the job still matches the active runtime,
+                // PGO graph, and tracking-map version.
                 if (success && current_generation &&
+                    job.pgo_graph_version == pgo_graph_version_ &&
                     active_tracking_map_version_ ==
                             job.correction.tracking_map_version &&
                     !awaiting_map_apply_) {
@@ -1039,7 +1041,7 @@ namespace small_point_lio_pgo {
                     pending_pose_commit_ = std::move(commit);
                     publish = true;
                 } else if (current_generation &&
-                           job.pgo_graph_version >
+                           pgo_graph_version_ >
                            applied_pgo_graph_version_) {
 
                     pgo_rebuild_pending_ = true; // 标记待重建
@@ -1080,9 +1082,24 @@ namespace small_point_lio_pgo {
             return false;
         }
 
+        // The rebuilt cloud contains keyframe clouds, not every point up to
+        // the correction time. Tail replay must therefore start after the
+        // latest keyframe actually included in this cloud.
+        double map_cutoff_timestamp = job.active_frames.front().stamp;
+        for (const auto &frame : job.active_frames) {
+
+            map_cutoff_timestamp =
+                    std::max(map_cutoff_timestamp, frame.stamp);
+        }
+        for (const auto &frame : job.frozen_history) {
+
+            map_cutoff_timestamp =
+                    std::max(map_cutoff_timestamp, frame.stamp);
+        }
+
         // 整理发给前端的地图
         const int64_t stamp_ns = static_cast<int64_t>(
-                std::llround(job.correction.stamp * 1e9));
+                std::llround(map_cutoff_timestamp * 1e9));
         message.header.stamp.sec =
                 static_cast<int32_t>(stamp_ns / 1000000000LL);
         message.header.stamp.nanosec =
