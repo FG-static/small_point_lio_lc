@@ -75,9 +75,9 @@ namespace small_point_lio_pgo {
         std::deque<nav_msgs::msg::Odometry> odom_buffer_;
         std::deque<sensor_msgs::msg::PointCloud2::ConstSharedPtr>
             pending_clouds_;
-        std::int64_t last_odom_stamp_ns_ = 0;
-        bool has_last_odom_stamp_ = false;
-        std::uint32_t next_candidate_id_ = 0;
+        std::int64_t last_odom_stamp_ns_ = 0;///< 最近一次参与同步的 odom 时间。
+        bool has_last_odom_stamp_ = false;///< 是否已经收到有效 odom。
+        std::uint32_t next_candidate_id_ = 0;///< 下一个关键帧候选的稳定 ID。
 
         // 已同步点云的累积窗口。注册点云始终保留在 odom 系，发布时再用
         // 窗口末帧位姿统一转换到末帧 body 系。
@@ -87,7 +87,7 @@ namespace small_point_lio_pgo {
         std::int64_t accumulation_window_start_ns_ = 0;
         std::int64_t accumulation_last_stamp_ns_ = 0;
         double accumulation_anchor_delay_sec_ = 0.0;
-        bool accumulation_active_ = false;
+        bool accumulation_active_ = false;///< 当前是否正在累积一个关键帧时间窗口。
 
         rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;

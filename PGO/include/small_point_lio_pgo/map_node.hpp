@@ -29,9 +29,9 @@
 namespace small_point_lio_pgo {
 
     struct StoredKeyFrame {
-        rclcpp::Time stamp;
-        geometry_msgs::msg::Pose raw_pose;
-        pcl::PointCloud<pcl::PointXYZ>::Ptr local_cloud;
+        rclcpp::Time stamp;///< 关键帧时间。
+        geometry_msgs::msg::Pose raw_pose;///< 原始 T_odom_body 位姿。
+        pcl::PointCloud<pcl::PointXYZ>::Ptr local_cloud;///< body 坐标系局部点云。
     };
 
     class MapNode : public rclcpp::Node {
@@ -43,9 +43,11 @@ namespace small_point_lio_pgo {
 
         void loadParams();
 
+        /// 保存关键帧原始点云和 odom 位姿。
         void callbackKeyFrameMsg(
             small_point_lio_pgo::msg::KeyFrame::ConstSharedPtr msg
         );
+        /// 接收全量 PGO 位姿快照并触发全局地图重建。
         void callbackOptimizedKeyFrames(
             small_point_lio_pgo::msg::OptimizedKeyFrames::ConstSharedPtr msg
         );
@@ -54,6 +56,7 @@ namespace small_point_lio_pgo {
             std::shared_ptr<std_srvs::srv::Trigger::Response> response
         );
 
+        /// 根据 raw/optimized 位姿重新投影所有关键帧并发布地图。
         void rebuildMap(
             const rclcpp::Time &stamp
         );
@@ -66,12 +69,12 @@ namespace small_point_lio_pgo {
             const small_point_lio_pgo::msg::KeyFrame &msg
         ) const;
 
-        std::unordered_map<uint32_t, StoredKeyFrame> keyframes_;
-        std::unordered_map<uint32_t, geometry_msgs::msg::Pose> optimized_poses_;
-        Eigen::Isometry3d pgo_correction_ = Eigen::Isometry3d::Identity();
+        std::unordered_map<uint32_t, StoredKeyFrame> keyframes_;///< 已接收的关键帧数据库。
+        std::unordered_map<uint32_t, geometry_msgs::msg::Pose> optimized_poses_;///< 最新 PGO 位姿快照。
+        Eigen::Isometry3d pgo_correction_ = Eigen::Isometry3d::Identity();///< 尾部未优化关键帧的近似 map<-odom 修正。
         Eigen::Isometry3d T_body_lidar_ = Eigen::Isometry3d::Identity();
-        bool has_pgo_correction_ = false;
-        pcl::PointCloud<pcl::PointXYZ>::Ptr global_map_;
+        bool has_pgo_correction_ = false;///< pgo_correction_ 是否有效。
+        pcl::PointCloud<pcl::PointXYZ>::Ptr global_map_;///< 当前发布的全局地图视图。
         std::mutex map_mutex_;
         rclcpp::Subscription<small_point_lio_pgo::msg::KeyFrame>::SharedPtr sub_keyframe_;
         rclcpp::Subscription<small_point_lio_pgo::msg::OptimizedKeyFrames>::SharedPtr sub_optimized_keyframes_;

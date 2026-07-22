@@ -42,23 +42,22 @@ namespace small_point_lio_pgo {
 
         using SteadyClock = std::chrono::steady_clock;
 
-        /// Normalized packet-level scan-to-map evidence retained by the local
-        /// feedback node for quality gating and fixed-lag optimization.
+        /// 后端保存的 packet-level scan-to-map 证据副本，用于质量门限和局部滑窗优化。
         struct CorrectionRecord {
-            double stamp = 0.0;///< LiDAR packet boundary time, in seconds.
-            uint64_t sequence = 0;///< Monotonic sequence assigned by the frontend.
-            uint64_t tracking_map_version = 0;///< Map version used by this correction.
-            uint64_t active_map_source_correction_sequence = 0;///< Sequence that produced that map.
+            double stamp = 0.0;///< LiDAR packet 边界时间，单位秒。
+            uint64_t sequence = 0;///< 前端分配的 correction 序号。
+            uint64_t tracking_map_version = 0;///< 生成该证据时使用的 iVox 版本。
+            uint64_t active_map_source_correction_sequence = 0;///< 当前 iVox 的来源 correction 序号。
             // ALL is IMU-ONLY
             // VVVV
-            /// IMU-only pose propagated from the preceding packet boundary.
+            /// 从前一个 packet 边界仅用 IMU 推进的位姿。
             Eigen::Isometry3d packet_predicted =
                     Eigen::Isometry3d::Identity();
-            /// Correction-free pose propagated from the current map epoch.
+            /// 从当前地图 epoch 以来仅用 IMU 推进的位姿。
             Eigen::Isometry3d epoch_predicted =
                     Eigen::Isometry3d::Identity();
             // ^^^^
-            /// Frontend ESKF pose after the packet's scan-to-map updates.
+            /// 前端完成本 packet 点更新后的 ESKF 位姿。
             Eigen::Isometry3d corrected = Eigen::Isometry3d::Identity();
             uint32_t attempted_updates = 0;///< Point residuals submitted to the ESKF.
             uint32_t accepted_updates = 0; ///< Point residuals accepted by the ESKF.
@@ -66,74 +65,68 @@ namespace small_point_lio_pgo {
             double residual_max_abs = 0.0; ///< Largest accepted absolute residual.
         };
 
-        /// Persistent keyframe candidate used by both the active local window
-        /// and the nearby frozen-history portion of the rebuilt tracking map.
+        /// 持久化关键帧候选，同时服务于 active 局部窗口和 frozen 历史地图。
         struct CandidateRecord {
-            uint32_t id = 0;///< Stable keyframe/pose-graph identifier.
-            double stamp = 0.0;///< Keyframe acquisition time, in seconds.
-            Eigen::Isometry3d raw_pose = Eigen::Isometry3d::Identity();///< Original odom pose.
-            pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_body;///< Undistorted keyframe cloud in its body frame.
-            bool has_epoch_prediction = false;///< Whether a matching correction-free pose exists.
-            uint64_t prediction_map_version = 0;///< Map epoch of the associated prediction.
+            uint32_t id = 0;///< 稳定的关键帧/图节点 ID。
+            double stamp = 0.0;///< 关键帧采集时间，单位秒。
+            Eigen::Isometry3d raw_pose = Eigen::Isometry3d::Identity();///< 原始 odom 位姿。
+            pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_body;///< body 坐标系下的去畸变点云。
+            bool has_epoch_prediction = false;///< 是否已经关联到有效的 correction-free 预测。
+            uint64_t prediction_map_version = 0;///< 该预测对应的 tracking-map 版本。
             Eigen::Isometry3d epoch_prediction =
-                    Eigen::Isometry3d::Identity();///< Prediction at the keyframe timestamp.
+                    Eigen::Isometry3d::Identity();///< 关键帧时间处的 correction-free 预测。
         };
 
-        /// Locally optimized pose cached only for the map and PGO versions that
-        /// produced it; version tags prevent stale overrides from being reused.
+        /// 局部优化位姿缓存；只有地图版本和 PGO 版本都匹配时才可复用。
         struct LocalPoseOverride {
-            uint64_t tracking_map_version = 0;///< Tracking-map version containing the pose.
-            uint64_t pgo_graph_version = 0;   ///< PGO snapshot folded into the pose.
-            Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();///< Pose in odom.
+            uint64_t tracking_map_version = 0;///< 该位姿所属的 tracking-map 版本。
+            uint64_t pgo_graph_version = 0;   ///< 该位姿吸收的 PGO 快照版本。
+            Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();///< odom 坐标系下的局部优化位姿。
         };
 
-        /// Immutable candidate snapshot copied into a worker job so background
-        /// optimization never reads callback-owned containers.
+        /// 复制到后台任务的不可变关键帧快照，避免 worker 读取 callback 容器。
         struct FrameSnapshot {
-            uint32_t candidate_id = 0;///< Stable keyframe identifier.
-            double stamp = 0.0;      ///< Keyframe acquisition time, in seconds.
-            /// Seed pose after applying the valid local/PGO correction field.
+            uint32_t candidate_id = 0;///< 稳定的关键帧 ID。
+            double stamp = 0.0;      ///< 关键帧时间，单位秒。
+            /// 应用有效局部/PGO 修正后的优化初值。
             Eigen::Isometry3d initial_pose =
                     Eigen::Isometry3d::Identity();
-            /// Correction-free pose used to form local odometry edges.
+            /// 用于构造局部 odom edge 的 correction-free 位姿。
             Eigen::Isometry3d epoch_prediction =
                     Eigen::Isometry3d::Identity();
-            pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud_body;///< Immutable body-frame cloud.
-            double distance_to_current = 0.0;///< Seed-pose distance used for history selection.
+            pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud_body;///< 不可变 body 坐标系点云。
+            double distance_to_current = 0.0;///< 用于挑选附近历史帧的距离。
         };
 
-        /// Self-contained asynchronous job that optimizes the active tail and
-        /// rebuilds a tracking cloud with nearby frozen history.
+        /// 自包含异步任务：优化 active 尾部并合并附近 frozen 历史重建 tracking cloud。
         struct BuildJob {
-            CorrectionRecord correction;///< Terminal constraint and source version.
-            uint64_t runtime_generation = 0;///< Invalidates jobs across runtime resets.
-            uint64_t pgo_graph_version = 0;///< PGO snapshot captured for this build.
-            std::string trigger_reason;///< Threshold or PGO event that scheduled the job.
-            std::vector<FrameSnapshot> active_frames;///< Poses optimized by the fixed-lag graph.
-            std::vector<FrameSnapshot> frozen_history;///< Spatial history inserted without optimization.
+            CorrectionRecord correction;///< 终端约束及其来源 correction 版本。
+            uint64_t runtime_generation = 0;///< 运行代次，防止 reset 前任务生效。
+            uint64_t pgo_graph_version = 0;///< 创建任务时捕获的 PGO 图版本。
+            std::string trigger_reason;///< 任务触发原因。
+            std::vector<FrameSnapshot> active_frames;///< 由局部滑窗图优化的关键帧。
+            std::vector<FrameSnapshot> frozen_history;///< 只插入地图、不参与本轮优化的历史帧。
         };
 
-        /// Optimized active-tail poses held transactionally until the frontend
-        /// acknowledges that the matching tracking-map version is active.
+        /// 局部优化位姿的事务暂存区，等待前端确认对应 tracking-map 已激活。
         struct PendingPoseCommit {
-            uint64_t source_correction_sequence = 0;///< Evidence used by the optimization.
-            uint64_t source_tracking_map_version = 0;///< Map version observed by that evidence.
-            uint64_t target_tracking_map_version = 0;///< Version expected after frontend swap.
-            uint64_t pgo_graph_version = 0;///< PGO snapshot incorporated in the result.
-            std::unordered_map<uint32_t, Eigen::Isometry3d> poses;///< Candidate ID to optimized odom pose.
+            uint64_t source_correction_sequence = 0;///< 优化使用的 correction 序号。
+            uint64_t source_tracking_map_version = 0;///< 该证据观察到的旧地图版本。
+            uint64_t target_tracking_map_version = 0;///< 前端切图后应出现的新版本。
+            uint64_t pgo_graph_version = 0;///< 结果中包含的 PGO 图版本。
+            std::unordered_map<uint32_t, Eigen::Isometry3d> poses;///< 关键帧 ID 到优化后 odom 位姿。
         };
 
-        /// Aggregate evidence quality over the recent packet window used by the
-        /// optimization trigger gate.
+        /// 汇总近期 packet 窗口的证据质量，用于判断是否触发优化。
         struct EvidenceSummary {
-            size_t packet_count = 0;///< Packets included in the evidence window.
-            uint64_t attempted_updates = 0;///< Summed submitted point residuals.
-            uint64_t accepted_updates = 0; ///< Summed accepted point residuals.
-            double duration_sec = 0.0;      ///< Time span covered by the window.
-            double valid_ratio = 0.0;       ///< Accepted-to-attempted update ratio.
+            size_t packet_count = 0;///< 证据窗口包含的 packet 数。
+            uint64_t attempted_updates = 0;///< 窗口内提交的点残差总数。
+            uint64_t accepted_updates = 0; ///< 窗口内接受的点残差总数。
+            double duration_sec = 0.0;      ///< 证据窗口覆盖的时间跨度。
+            double valid_ratio = 0.0;       ///< accepted / attempted 更新比例。
         };
 
-        /// Integer voxel coordinate used to downsample the rebuilt tracking map.
+        /// 重建 tracking map 时使用的整数体素坐标。
         struct VoxelKey {
             int64_t x = 0;
             int64_t y = 0;
@@ -144,50 +137,61 @@ namespace small_point_lio_pgo {
             }
         };
 
-        /// Hash functor allowing VoxelKey to index the temporary voxel table.
+        /// 使 VoxelKey 可以作为临时体素表哈希键。
         struct VoxelKeyHash {
             size_t operator()(const VoxelKey &key) const;
         };
 
         void load_parameters();
 
+        /// 接收前端 packet correction，更新证据缓冲并检查触发条件。
         void correction_callback(
             small_point_lio_interfaces::msg::ScanToMapCorrection::
                 ConstSharedPtr msg
         );
 
+        /// 接收关键帧候选并与 correction 按时间关联。
         void candidate_callback(
             small_point_lio_pgo::msg::KeyFrame::ConstSharedPtr msg
         );
 
+        /// 接收新的全局 PGO 快照并判断是否需要局部地图重建。
         void optimized_callback(
             small_point_lio_pgo::msg::OptimizedKeyFrames::
                 ConstSharedPtr msg
         );
 
-        // "_locked" is meaning that it need mutex lock to change
+        // 名称带 _locked 的函数要求调用者已经持有 state_mutex_。
+        /// 清空后端缓存并递增 runtime generation，使旧任务失效。
         void reset_runtime_state_locked(const std::string &reason);
 
+        /// 根据前端新地图版本确认 pending pose 是否可以正式提交。
         void acknowledge_map_version_locked(
             uint64_t active_version,
             uint64_t active_map_source_correction_sequence
         );
 
+        /// 为所有候选关键帧重新寻找时间上匹配的 correction。
         void associate_candidate_predictions_locked();
 
+        /// 为单个关键帧关联最近的 correction-free epoch prediction。
         bool associate_candidate_prediction_locked(CandidateRecord &candidate);
 
+        /// 汇总同一 tracking-map 版本内最近 packet 的更新质量。
         EvidenceSummary evidence_summary_locked(
             const CorrectionRecord &latest
         ) const;
 
+        /// 判断触发条件并把最新任务放入 worker 队列。
         bool schedule_if_needed_locked(const CorrectionRecord &latest);
 
+        /// 捕获版本、关键帧和地图快照，生成一个异步 BuildJob。
         std::optional<BuildJob> make_build_job_locked(
             const CorrectionRecord &latest,
             const std::string &reason
         );
 
+        /// 为候选关键帧生成局部优化初值，并处理 PGO correction 插值。
         std::unordered_map<uint32_t, Eigen::Isometry3d>
             seed_poses_locked(
                 uint64_t tracking_map_version,
@@ -196,6 +200,7 @@ namespace small_point_lio_pgo {
                 uint64_t optimized_version
             ) const;
 
+        /// 判断新旧 PGO 快照造成的局部形变是否超过重建阈值。
         bool pgo_deformation_significant_locked(
             const std::unordered_map<uint32_t, Eigen::Isometry3d>
                 &previous,
@@ -203,20 +208,23 @@ namespace small_point_lio_pgo {
                 &current
         ) const;
 
+        /// 后台等待并执行 BuildJob，发布仍然有效的地图结果。
         void worker_loop();
 
-        // packet it to a msg
+        /// 执行局部优化、构建地图消息并准备待提交位姿。
         bool execute_build_job(
             const BuildJob &job,
             small_point_lio_interfaces::msg::LocalTrackingMap &message,
             PendingPoseCommit &commit
         );
 
+        /// 用局部 PoseGraph 优化 active 关键帧窗口。
         bool optimize_active_window(
             const BuildJob &job,
             std::vector<Eigen::Isometry3d> &optimized_poses
         ) const;
 
+        /// 将历史和优化后的 active 点云变换到 odom 并体素降采样。
         pcl::PointCloud<pcl::PointXYZ>::Ptr build_tracking_cloud(
             const BuildJob &job,
             const std::vector<Eigen::Isometry3d> &optimized_poses
@@ -245,31 +253,31 @@ namespace small_point_lio_pgo {
         );
 
         mutable std::mutex state_mutex_;
-        std::deque<CorrectionRecord> corrections_;
-        std::deque<CandidateRecord> candidates_;
-        std::unordered_map<uint32_t, LocalPoseOverride> local_pose_overrides_;
-        std::unordered_map<uint32_t, Eigen::Isometry3d> optimized_poses_;
-        uint64_t pgo_graph_version_ = 0;
-        uint64_t applied_pgo_graph_version_ = 0;
-        uint64_t active_tracking_map_version_ = 0;
-        uint64_t runtime_generation_ = 0;
-        double last_correction_stamp_ = -1.0;
-        bool has_correction_ = false;
-        bool pgo_rebuild_pending_ = false;
+        std::deque<CorrectionRecord> corrections_;///< 按时间保存的近期 correction 缓冲。
+        std::deque<CandidateRecord> candidates_;///< 关键帧候选数据库。
+        std::unordered_map<uint32_t, LocalPoseOverride> local_pose_overrides_;///< 已确认地图版本对应的局部位姿。
+        std::unordered_map<uint32_t, Eigen::Isometry3d> optimized_poses_;///< 最新 PGO 全局位姿快照。
+        uint64_t pgo_graph_version_ = 0;///< 后端当前收到的 PGO 图版本。
+        uint64_t applied_pgo_graph_version_ = 0;///< 已随前端地图切换确认的 PGO 版本。
+        uint64_t active_tracking_map_version_ = 0;///< 后端记录的前端当前地图版本。
+        uint64_t runtime_generation_ = 0;///< 后端运行代次，隔离时间跳变和 reset。
+        double last_correction_stamp_ = -1.0;///< 最近收到的 correction 时间。
+        bool has_correction_ = false;///< 是否已经收到至少一条合法 correction。
+        bool pgo_rebuild_pending_ = false;///< 是否有尚未折叠进局部地图的 PGO 更新。
 
-        bool build_in_progress_ = false;
-        bool awaiting_map_apply_ = false;
-        uint64_t awaiting_target_version_ = 0;
-        SteadyClock::time_point awaiting_since_ = SteadyClock::now();
+        bool build_in_progress_ = false;///< 是否已有 BuildJob 在 worker 中执行。
+        bool awaiting_map_apply_ = false;///< 是否已发布地图、等待前端确认切换。
+        uint64_t awaiting_target_version_ = 0;///< 正在等待确认的目标地图版本。
+        SteadyClock::time_point awaiting_since_ = SteadyClock::now();///< 开始等待前端切图的 steady 时间。
         SteadyClock::time_point last_map_applied_time_ =
-            SteadyClock::time_point::min();
-        std::optional<PendingPoseCommit> pending_pose_commit_;
+            SteadyClock::time_point::min();///< 上一次确认地图切换的 steady 时间。
+        std::optional<PendingPoseCommit> pending_pose_commit_;///< 尚未确认提交的局部优化位姿。
 
-        std::mutex worker_mutex_;
-        std::condition_variable worker_cv_;
-        std::optional<BuildJob> queued_job_;
-        bool stop_worker_ = false;
-        std::thread worker_thread_;
+        std::mutex worker_mutex_;///< 保护 worker 任务队列。
+        std::condition_variable worker_cv_;///< 唤醒后台优化线程。
+        std::optional<BuildJob> queued_job_;///< 等待执行的最新任务。
+        bool stop_worker_ = false;///< 请求 worker 退出。
+        std::thread worker_thread_;///< 后端局部优化/建图线程。
 
         rclcpp::Subscription<
             small_point_lio_interfaces::msg::ScanToMapCorrection>::

@@ -36,34 +36,33 @@ namespace common {
         Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();///< Unit rotation quaternion.
     };
 
-    /// Packet-boundary scan-to-map evidence exported by the Point-LIO frontend.
-    /// It keeps both prediction baselines and the corrected ESKF pose so the
-    /// backend can distinguish accumulated drift from a single-packet update.
+    /// 前端在一个 LiDAR packet 边界导出的 scan-to-map 证据。
+    /// 同时保存两个 IMU-only 基线和本 packet 结束后的 ESKF 位姿，
+    /// 供后端区分单 packet 修正与累计漂移。
     struct ScanToMapCorrection {
-        double timestamp = 0.0;///< LiDAR packet boundary time, in seconds.
-        uint64_t sequence = 0; ///< Monotonic frontend correction identifier.
-        uint64_t tracking_map_version = 0;///< iVox version used for this update.
-        Pose3d packet_predicted_pose;///< IMU-only prediction from the preceding packet boundary.
-        Pose3d epoch_predicted_pose; ///< IMU-only prediction from the current map epoch.
-        Pose3d corrected_pose;       ///< ESKF pose after this packet's point updates.
-        uint32_t attempted_point_updates = 0;///< Point residuals offered to the ESKF.
-        uint32_t accepted_point_updates = 0; ///< Point residuals accepted by the ESKF.
-        double residual_rms = 0.0;          ///< RMS over accepted point residuals.
-        double residual_max_abs = 0.0;      ///< Largest accepted absolute residual.
-        uint64_t active_map_source_correction_sequence = 0;///< Evidence sequence that produced the active iVox.
+        double timestamp = 0.0;///< packet 边界时间，单位秒。
+        uint64_t sequence = 0; ///< 本次运行内第几个前端 correction。
+        uint64_t tracking_map_version = 0;///< 产生本 correction 时使用的 iVox 版本。
+        Pose3d packet_predicted_pose;///< 从上一个 packet 边界仅用 IMU 推进的位姿。
+        Pose3d epoch_predicted_pose; ///< 当前地图版本启用以来仅用 IMU 推进的位姿。
+        Pose3d corrected_pose;       ///< 本 packet 点更新完成后的 ESKF 位姿。
+        uint32_t attempted_point_updates = 0;///< 提交给 ESKF 的点面残差数。
+        uint32_t accepted_point_updates = 0; ///< 被 ESKF 接受的点面残差数。
+        double residual_rms = 0.0;          ///< 被接受残差的 RMS。
+        double residual_max_abs = 0.0;      ///< 被接受残差的最大绝对值。
+        uint64_t active_map_source_correction_sequence = 0;///< 当前 iVox 来源 correction 序号。
     };
 
-    /// Versioned tracking-map replacement delivered from the local backend to
-    /// the frontend's asynchronous iVox builder.
+    /// 后端发给前端异步 iVox 构建器的带版本地图替换请求。
     struct LocalTrackingMapUpdate {
-        double cutoff_timestamp = 0.0;///< Rebuilt-map horizon; later journal points must be replayed.
-        uint64_t source_correction_sequence = 0;///< Evidence used to build and rebase this map.
-        uint64_t source_tracking_map_version = 0;///< Active iVox version on which the build started.
-        uint64_t target_tracking_map_version = 0;///< Version assigned after an atomic map swap.
-        uint64_t pgo_graph_version = 0;///< Global graph snapshot incorporated by the build.
-        uint32_t anchor_candidate_id = 0;///< Fixed oldest node of the local optimization window.
-        std::string trigger_reason;///< Build job trigger reason ("pgo", "instant_scan_correction", "cumulative_scan_correction").
-        std::vector<Eigen::Vector3f> points_odom;///< Map points in the estimator's odom basis, in metres.
+        double cutoff_timestamp = 0.0;///< 地图点云覆盖到的时间；之后的 tail 点需要重放。
+        uint64_t source_correction_sequence = 0;///< 构建并重定位该地图所依据的 correction 序号。
+        uint64_t source_tracking_map_version = 0;///< 构建开始时前端正在使用的 iVox 版本。
+        uint64_t target_tracking_map_version = 0;///< 地图切换成功后应成为的版本。
+        uint64_t pgo_graph_version = 0;///< 构建时采用的全局 PGO 图快照版本。
+        uint32_t anchor_candidate_id = 0;///< 局部窗口固定锚点的关键帧 ID。
+        std::string trigger_reason;///< 触发原因：pgo、瞬时修正或累计修正。
+        std::vector<Eigen::Vector3f> points_odom;///< 以估计器 odom 基准表达的地图点。
     };
 
 }// namespace common

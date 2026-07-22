@@ -37,9 +37,11 @@ namespace small_point_lio {
         std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odometry_publisher;
         std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>> pointcloud_publisher;
         std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Path>> path_publisher;
+        /// 发布前端 packet-level scan-to-map correction 证据。
         std::shared_ptr<rclcpp::Publisher<
                 small_point_lio_interfaces::msg::ScanToMapCorrection>>
                 scan_to_map_correction_publisher;
+        /// 接收后端重建的局部 tracking map。
         std::shared_ptr<rclcpp::Subscription<
                 small_point_lio_interfaces::msg::LocalTrackingMap>>
                 local_tracking_map_subscription;

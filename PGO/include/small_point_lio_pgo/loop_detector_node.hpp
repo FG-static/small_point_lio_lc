@@ -412,14 +412,14 @@ namespace small_point_lio_pgo {
         bool pgo_loop_robust_kernel_enable_ = true;
         double pgo_loop_robust_kernel_delta_ = 1.0;
         std::string pgo_loop_measurement_mode_ = "gravity_preserving";
-        bool has_pgo_optimized_snapshot_ = false;
-        uint64_t pgo_graph_version_ = 0;
+        bool has_pgo_optimized_snapshot_ = false;///< 是否已经成功生成过 PGO 快照。
+        uint64_t pgo_graph_version_ = 0;///< 成功 PGO 结果的全局版本号。
 
         // map->odom is a cached global correction. It changes only after a
         // successful PGO run; new frontend keyframes must not reset it.
-        Eigen::Isometry3d map_from_odom_ = Eigen::Isometry3d::Identity();
-        uint32_t map_to_odom_anchor_id_ = 0;
-        bool map_to_odom_has_anchor_ = false;
+        Eigen::Isometry3d map_from_odom_ = Eigen::Isometry3d::Identity();///< 当前 map<-odom 全局修正。
+        uint32_t map_to_odom_anchor_id_ = 0;///< 计算全局修正时使用的最新公共关键帧。
+        bool map_to_odom_has_anchor_ = false;///< 是否已有有效 map<-odom 锚点。
         mutable std::mutex map_to_odom_mutex_;
         rclcpp::TimerBase::SharedPtr map_to_odom_timer_;
 
