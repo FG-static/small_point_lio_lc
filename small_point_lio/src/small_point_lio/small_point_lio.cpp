@@ -550,35 +550,38 @@ namespace small_point_lio {
         }
 
         Eigen::Isometry3d source_correction;
-        if (!correction_for_sequence(
-                    candidate->metadata.source_correction_sequence,
-                    source_correction)) {
-            RCLCPP_WARN(
-                    logger,
-                    "Discarded rebuilt iVox: correction sequence %lu is no longer available",
-                    static_cast<unsigned long>(
-                            candidate->metadata.source_correction_sequence));
-            return;
-        }
+        const bool pgo_triggered =
+                candidate->metadata.trigger_reason == "pgo";
+        if (!pgo_triggered) {
+            if (!correction_for_sequence(
+                        candidate->metadata.source_correction_sequence,
+                        source_correction)) {
+                RCLCPP_WARN(
+                        logger,
+                        "Discarded rebuilt iVox: correction sequence %lu is no longer available",
+                        static_cast<unsigned long>(
+                                candidate->metadata.source_correction_sequence));
+                return;
+            }
 
-        // Reject every rebuilt map, including PGO-triggered maps, when the
-        // frontend correction has moved too far since the build snapshot.
-        const Eigen::Isometry3d lag =
-                cumulative_correction() * source_correction.inverse();
-        const double lag_translation = lag.translation().norm();
-        const double lag_rotation_deg =
-                rotation_angle(lag.rotation()) * 180.0 / M_PI;
-        if (lag_translation >
-                    parameters.local_map_max_apply_lag_translation_m ||
-            lag_rotation_deg >
-                    parameters.local_map_max_apply_lag_rotation_deg) {
-            RCLCPP_WARN(
-                    logger,
-                    "Discarded stale rebuilt iVox: post-snapshot correction "
-                    "translation=%.3fm rotation=%.3fdeg",
-                    lag_translation,
-                    lag_rotation_deg);
-            return;
+            // 若构建时的corr到最新corr之间的差距太大，说明构建结果不准，直接丢弃，pgo不检查这个
+            const Eigen::Isometry3d lag =
+                    cumulative_correction() * source_correction.inverse();
+            const double lag_translation = lag.translation().norm();
+            const double lag_rotation_deg =
+                    rotation_angle(lag.rotation()) * 180.0 / M_PI;
+            if (lag_translation >
+                        parameters.local_map_max_apply_lag_translation_m ||
+                lag_rotation_deg >
+                        parameters.local_map_max_apply_lag_rotation_deg) {
+                RCLCPP_WARN(
+                        logger,
+                        "Discarded stale rebuilt iVox: post-snapshot correction "
+                        "translation=%.3fm rotation=%.3fdeg",
+                        lag_translation,
+                        lag_rotation_deg);
+                return;
+            }
         }
 
         if (candidate->metadata.cutoff_timestamp + kTimestampEpsilon <
