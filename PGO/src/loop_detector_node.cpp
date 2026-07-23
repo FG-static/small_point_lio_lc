@@ -3294,7 +3294,7 @@ namespace small_point_lio_pgo {
             pgo_ms
         );
         has_pgo_optimized_snapshot_ = true;
-        ++pgo_graph_version_;
+        ++ pgo_graph_version_;
         updateMapToOdomFromOptimizedGraph();
         publishOptimizedKeyFrames();
         publishMapToOdom();

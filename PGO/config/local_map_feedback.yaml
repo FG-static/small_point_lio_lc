@@ -43,6 +43,8 @@ small_point_lio_local_map_feedback:
     local_graph_max_iterations: 20
     # [x, y, z, roll, pitch, yaw]
     local_odom_info_diag: [300.0, 300.0, 150.0, 120.0, 120.0, 300.0]
+    max_local_translation_threshold: 0.30
+    max_local_rotation_deg_threshold: 1.50
 
     map_voxel_leaf_size_m: 0.20
     map_max_points: 300000

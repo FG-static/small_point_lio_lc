@@ -42,7 +42,7 @@ small_point_lio_pgo_loop_detector:
     gravity_align_enable: true
     gravity_align_source: "imu_average" # imu_average / manual_rpy
     gravity_align_imu_topic: "/livox/imu"
-    gravity_align_sample_sec: 5.0
+    gravity_align_sample_sec: 5.0 # GRAVITY ALIGN SAMPLE TIME
     gravity_align_acc_scale: 9.80665
     # Garage bag reference from the first 20s IMU average:
     # approximately [-15.23, -6.20, 0.83] degrees.
@@ -70,8 +70,8 @@ small_point_lio_pgo_loop_detector:
     loop_iris_distance_thresh: 0.35 # IRIS DIST GATE
     loop_gicp_enable: true
     # Mean squared nearest-neighbor distance inside max correspondence range.
-    loop_gicp_score_thresh: 0.5 # BOUNDED GICP SCORE GATE
-    loop_gicp_max_correction_trans: 2.5
+    loop_gicp_score_thresh: 0.15 # BOUNDED GICP SCORE GATE
+    loop_gicp_max_correction_trans: 3.5
     loop_gicp_max_correction_rot_deg: 25.0
     loop_gicp_selection_correction_trans_weight: 0.1
     loop_gicp_selection_correction_rot_weight: 0.0
@@ -86,7 +86,7 @@ small_point_lio_pgo_loop_detector:
     loop_gicp_transformation_epsilon: 0.001
     # A finite transform is not enough: loop GICP must converge with enough overlap.
     loop_gicp_min_inliers: 100
-    loop_gicp_min_inlier_ratio: 0.05
+    loop_gicp_min_inlier_ratio: 0.85
     loop_gicp_max_registration_error: 20000.0
     pgo_enable: true
     pgo_optimize_on_loop: true
@@ -114,7 +114,7 @@ small_point_lio_pgo_loop_detector:
     pgo_loop_robust_kernel_delta: 1.0
     # gravity_preserving uses GICP x/y/yaw but keeps frontend z/roll/pitch.
     # Set full_se3 only when the loop registration is reliable in all 6 DoF.
-    pgo_loop_measurement_mode: "gravity_preserving"
+    pgo_loop_measurement_mode: "gravity_preserving" # gravity_preserving / full_se3
     lcd_retrieval_enable: true
     lcd_retrieval_top_k: 120
     lcd_retrieval_max_distance: -1.0

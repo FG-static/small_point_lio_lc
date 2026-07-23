@@ -1,7 +1,9 @@
 #include "small_point_lio_pgo/local_map_feedback_node.hpp"
 
+#include <Eigen/src/Geometry/Transform.h>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <unordered_set>
 #include <utility>
@@ -197,6 +199,8 @@ namespace small_point_lio_pgo {
         load_int("min_active_keyframes", min_active_keyframes_);
         load_double("history_search_radius_m", history_search_radius_m_);
         load_int("history_max_keyframes", history_max_keyframes_);
+        load_double("max_local_translation_threshold", max_local_translation_threshold_);
+        load_double("max_local_rotation_deg_threshold", max_local_rotation_deg_threshold_);
         load_double("map_voxel_leaf_size_m", map_voxel_leaf_size_m_);
         load_int("map_max_points", map_max_points_);
         load_int("map_min_points", map_min_points_);
@@ -231,6 +235,8 @@ namespace small_point_lio_pgo {
         min_active_keyframes_ = std::clamp(
                 min_active_keyframes_, 2, active_window_keyframes_);
         history_max_keyframes_ = std::max(0, history_max_keyframes_);
+        max_local_translation_threshold_ = std::max(0.0, max_local_translation_threshold_);
+        max_local_rotation_deg_threshold_ = std::max(0.0, max_local_rotation_deg_threshold_);
         map_voxel_leaf_size_m_ = std::max(0.01, map_voxel_leaf_size_m_);
         map_max_points_ = std::max(100, map_max_points_);
         map_min_points_ = std::clamp(map_min_points_, 1, map_max_points_);
@@ -592,7 +598,7 @@ namespace small_point_lio_pgo {
                     static_cast<unsigned long>(awaiting_target_version_));
             if (pending_pose_commit_ &&
                 pending_pose_commit_->pgo_graph_version >
-                        applied_pgo_graph_version_)
+                        applied_pgo_graph_version_) // pgo graph version 有变动就说明此次进行了 pgo
                 pgo_rebuild_pending_ = true;
 
             awaiting_map_apply_ = false;
@@ -718,6 +724,26 @@ namespace small_point_lio_pgo {
                 optimized_poses_,
                 pgo_graph_version_);
 
+        const bool new_pgo_snapshot =
+                reason == "pgo" &&
+                pgo_graph_version_ > applied_pgo_graph_version_;
+
+        double latest_pgo_stamp =
+                -std::numeric_limits<double>::infinity();
+
+        if (new_pgo_snapshot) {
+
+            for (const auto &candidate : candidates_) {
+
+                if (optimized_poses_.find(candidate.id) !=
+                        optimized_poses_.end()) {
+
+                    latest_pgo_stamp =
+                            std::max(latest_pgo_stamp, candidate.stamp);
+                }
+            }
+        }
+
         // 构建局部可调整关键帧容器
         std::vector<const CandidateRecord *> active_candidates;
         active_candidates.reserve(static_cast<size_t>(active_window_keyframes_));
@@ -756,6 +782,11 @@ namespace small_point_lio_pgo {
             FrameSnapshot frame;
             frame.candidate_id = candidate->id;
             frame.stamp = candidate->stamp;
+            frame.raw_pose = candidate->raw_pose;
+            frame.pgo_covered =
+                new_pgo_snapshot &&
+                std::isfinite(latest_pgo_stamp) &&
+                candidate->stamp <= latest_pgo_stamp + kTimeEpsilon;
             frame.initial_pose = initial;
             frame.epoch_prediction = candidate->epoch_prediction;
             frame.cloud_body = candidate->cloud_body;
@@ -768,7 +799,82 @@ namespace small_point_lio_pgo {
         if (job.active_frames.size() <
             static_cast<size_t>(min_active_keyframes_))
             return std::nullopt;
+        if (new_pgo_snapshot) {
 
+            const size_t pgo_covered_count = static_cast<size_t>(
+                std::count_if(
+                    job.active_frames.begin(),
+                    job.active_frames.end(),
+                    [](const FrameSnapshot &frame) {
+                        return frame.pgo_covered;
+                    }));
+            double max_local_translation_delta = 0.0;
+            double max_local_rotation_deg_delta = 0.0;
+            int anchor_index = -1;
+            for (int index = static_cast<int>(job.active_frames.size()) - 1; index >= 0; -- index) {
+
+                if (job.active_frames[static_cast<size_t>(index)].pgo_covered) {
+
+                    anchor_index = index;
+                    break;
+                }
+            }
+            if (anchor_index >= 0) {
+
+                const auto baseline_pose =
+                    [this, &latest](const FrameSnapshot &frame) {
+
+                        const auto iter =
+                            local_pose_overrides_.find(frame.candidate_id);
+                        if (iter != local_pose_overrides_.end() &&
+                            iter->second.tracking_map_version == latest.tracking_map_version &&
+                            finite_pose(iter->second.pose))
+                            return iter->second.pose;
+                        return frame.raw_pose;
+                    };
+
+                const FrameSnapshot &anchor =
+                    job.active_frames[static_cast<size_t>(anchor_index)];
+
+                const Eigen::Isometry3d baseline_anchor =
+                    baseline_pose(anchor);
+                const Eigen::Isometry3d new_anchor =
+                    anchor.initial_pose;
+
+                for (const auto &frame : job.active_frames) {
+
+                    if (!frame.pgo_covered) continue;
+
+                    const Eigen::Isometry3d baseline = baseline_pose(frame);
+                    const Eigen::Isometry3d old_relative = baseline_anchor.inverse() * baseline;
+                    const Eigen::Isometry3d new_relative = new_anchor.inverse() * frame.initial_pose;
+                    const Eigen::Isometry3d delta = old_relative.inverse() * new_relative;
+                    const double translation_delta = delta.translation().norm();
+                    const double rotation_deg_delta = rotation_angle(delta.rotation()) * 180.0 / M_PI;
+                    max_local_translation_delta =
+                        std::max(max_local_translation_delta, translation_delta);
+                    max_local_rotation_deg_delta =
+                        std::max(max_local_rotation_deg_delta, rotation_deg_delta);
+                    if (translation_delta >=
+                                max_local_translation_threshold_ ||
+                        rotation_deg_delta >=
+                                max_local_rotation_deg_threshold_) {
+
+                        job.pgo_reanchor = true;
+                    }
+                }
+            }
+            RCLCPP_INFO(
+                get_logger(),
+                "PGO feedback mode: version=%lu mode=%s "
+                "local_delta=[%.3fm %.2fdeg] covered=%zu/%zu",
+                static_cast<unsigned long>(job.pgo_graph_version),
+                job.pgo_reanchor ? "large_reanchor" : "small_correction",
+                max_local_translation_delta,
+                max_local_rotation_deg_delta,
+                pgo_covered_count,
+                job.active_frames.size());
+        }
         // 历史关键帧加入冻结容器
         for (const auto &candidate : candidates_) {
 
@@ -1153,6 +1259,26 @@ namespace small_point_lio_pgo {
         if (job.active_frames.size() < 2)
             return false;
 
+        // 大 PGO 且 active 全部已经被 PGO 覆盖时，
+        // 直接使用 initial_pose，不再让终端 corrected 改写 PGO 结果。
+        bool has_free_active_node = false;
+        for (const auto &frame : job.active_frames) {
+
+            if (!job.pgo_reanchor || !frame.pgo_covered) {
+
+                has_free_active_node = true;
+                break;
+            }
+        }
+        if (job.pgo_reanchor && !has_free_active_node) {
+
+            optimized_poses.clear();
+            optimized_poses.reserve(job.active_frames.size());
+            for (const auto &frame : job.active_frames)
+                optimized_poses.push_back(frame.initial_pose);
+            return true;
+        }
+
         PoseGraph graph;
         PoseGraphOptions options;
         options.max_iterations = local_graph_max_iterations_;
@@ -1165,6 +1291,9 @@ namespace small_point_lio_pgo {
             node.id = static_cast<uint32_t>(index);
             node.stamp = job.active_frames[index].stamp;
             node.pose = job.active_frames[index].initial_pose;
+            node.fixed =
+                    job.pgo_reanchor &&
+                    job.active_frames[index].pgo_covered;
             if (!graph.addNode(node))
                 return false;
         }
@@ -1180,10 +1309,18 @@ namespace small_point_lio_pgo {
                 informationFromDiagonal(local_odom_info_diag_);
         for (size_t index = 1; index < job.active_frames.size(); ++ index) {
 
+            const auto &previous = job.active_frames[index - 1];
+            const auto &current_frame = job.active_frames[index];
+            const bool preserve_pgo_edge =
+                    job.pgo_reanchor &&
+                    previous.pgo_covered &&
+                    current_frame.pgo_covered;
             const Eigen::Isometry3d relative =
-                    job.active_frames[index - 1]
-                            .epoch_prediction.inverse() *
-                    job.active_frames[index].epoch_prediction;
+                    preserve_pgo_edge
+                        ? previous.initial_pose.inverse() *
+                                current_frame.initial_pose
+                        : previous.raw_pose.inverse() *
+                                current_frame.raw_pose;
             if (!graph.addOdomEdge(
                     static_cast<uint32_t>(index - 1),
                     static_cast<uint32_t>(index),
@@ -1192,8 +1329,8 @@ namespace small_point_lio_pgo {
                 return false;
         }
         const Eigen::Isometry3d terminal_relative =
-                job.active_frames.back().epoch_prediction.inverse() *
-                job.correction.epoch_predicted;
+                job.active_frames.back().raw_pose.inverse() *
+                job.correction.packet_predicted;
         if (!graph.addOdomEdge(
                     static_cast<uint32_t>(job.active_frames.size() - 1),
                     current.id,

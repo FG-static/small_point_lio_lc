@@ -88,12 +88,18 @@ namespace small_point_lio_pgo {
         struct FrameSnapshot {
             uint32_t candidate_id = 0;///< 稳定的关键帧 ID。
             double stamp = 0.0;      ///< 关键帧时间，单位秒。
+            /// 前端原始odom位姿，用于推算 pose graph 中关键帧的相对位姿
+            Eigen::Isometry3d raw_pose =
+                Eigen::Isometry3d::Identity();
             /// 应用有效局部/PGO 修正后的优化初值。
             Eigen::Isometry3d initial_pose =
-                    Eigen::Isometry3d::Identity();
+                Eigen::Isometry3d::Identity();
             /// 用于构造局部 odom edge 的 correction-free 位姿。
             Eigen::Isometry3d epoch_prediction =
-                    Eigen::Isometry3d::Identity();
+                Eigen::Isometry3d::Identity();
+
+            // 是否是pgo覆盖的部分
+            bool pgo_covered = false;
             pcl::PointCloud<pcl::PointXYZ>::ConstPtr cloud_body;///< 不可变 body 坐标系点云。
             double distance_to_current = 0.0;///< 用于挑选附近历史帧的距离。
         };
@@ -104,6 +110,7 @@ namespace small_point_lio_pgo {
             uint64_t runtime_generation = 0;///< 运行代次，防止 reset 前任务生效。
             uint64_t pgo_graph_version = 0;///< 创建任务时捕获的 PGO 图版本。
             std::string trigger_reason;///< 任务触发原因。
+            bool pgo_reanchor = false; // PGO 重锚定模式
             std::vector<FrameSnapshot> active_frames;///< 由局部滑窗图优化的关键帧。
             std::vector<FrameSnapshot> frozen_history;///< 只插入地图、不参与本轮优化的历史帧。
         };
@@ -319,6 +326,8 @@ namespace small_point_lio_pgo {
         int min_active_keyframes_ = 3;
         double history_search_radius_m_ = 20.0;
         int history_max_keyframes_ = 80;
+        double max_local_translation_threshold_ = 0.30;
+        double max_local_rotation_deg_threshold_ = 1.50;
         double map_voxel_leaf_size_m_ = 0.20;
         int map_max_points_ = 300000;
         int map_min_points_ = 100;
