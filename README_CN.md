@@ -109,23 +109,54 @@ source install/setup.bash
 
 ## 运行
 
-### 仅前端
+三种模式共用同一条 rosbag remap 命令，将 Livox 话题名映射到配置文件中的
+`/livox/lidar`、`/livox/imu`：
 
 ```bash
+ros2 bag play <bag_path> --clock \
+  --remap \
+    /livox/lidar_192_168_1_185:=/livox/lidar \
+    /livox/imu_192_168_1_185:=/livox/imu
+```
+
+### 模式一：仅前端
+
+里程计 + 局部地图，无回环检测和 PGO。由于没有后端提供全局地图，需开启
+前端自身的 PCD 累积器。
+
+```bash
+# 终端 1：前端（save_pcd:=true 开启 PCD 累积器）
+ros2 launch small_point_lio frontend_bringup.launch.py save_pcd:=true
+
+# 终端 2：rosbag 回放（带 remap，见上）
+```
+
+回放结束后保存累积的 PCD：
+
+```bash
+ros2 service call /map_save std_srvs/srv/Trigger
+```
+
+### 模式二：前端 + 后端（无反馈闭环）
+
+回环检测 + PGO + 全局地图 + map→odom TF，但后端**不**将修正地图反馈给
+前端。前端继续在自己的 iVox 上运行；后端独立优化位姿并发布修正后的
+全局地图。
+
+```bash
+# 终端 1：前端
 ros2 launch small_point_lio frontend_bringup.launch.py
+
+# 终端 2：后端（无反馈节点）
+ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py
+
+# 终端 3：rosbag 回放（带 remap，见上）
 ```
 
-默认使用 `small_point_lio/config/mid360.yaml`，`use_sim_time` 默认为 `true`
-（方便 rosbag 回放）。其他雷达请参照现有示例创建配置文件，通过 `ros2 run` 指定：
+### 模式三：前端 + 后端（完整 SLAM，含反馈闭环）
 
-```bash
-ros2 run small_point_lio small_point_lio_node \
-  --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
-```
-
-### 前端 + 后端（完整 SLAM，含局部地图反馈）
-
-需要三个终端：前端、后端、rosbag 回放。
+在前者基础上增加闭环局部跟踪地图反馈：后端用 PGO 优化后的位姿重建 iVox
+并发送给前端，前端在线热替换跟踪地图。
 
 ```bash
 # 终端 1：前端（启用 packet 级修正证据 + 地图反馈通路）
@@ -136,21 +167,28 @@ ros2 launch small_point_lio frontend_bringup.launch.py \
 ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
   enable_local_map_feedback:=true
 
-# 终端 3：rosbag 回放
-ros2 bag play <bag_path> --clock
+# 终端 3：rosbag 回放（带 remap，见上）
 ```
 
 `frontend_bringup.launch.py` 支持 `use_sim_time`（默认 `true`）、`rviz`
 （默认 `true`）、`save_pcd`（默认 `false`）、`enable_local_map_feedback`
-（默认 `false`）等参数。
-
-### 仅后端（回环 + 全局地图，无前端反馈）
+（默认 `false`）等参数。默认使用 `small_point_lio/config/mid360.yaml`。
+其他雷达请参照现有示例创建配置文件，通过 `ros2 run` 指定：
 
 ```bash
-ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py
+ros2 run small_point_lio small_point_lio_node \
+  --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
 ```
 
-此模式运行关键帧桥接、回环检测和地图节点，不启动局部地图反馈节点。
+### 各模式启动的节点
+
+| 节点 | 模式一 | 模式二 | 模式三 |
+|---|---|---|---|
+| `small_point_lio_node` | ✓ | ✓ | ✓ |
+| `keyframe_bridge_node` | — | ✓ | ✓ |
+| `loop_detector_node` | — | ✓ | ✓ |
+| `map_node` | — | ✓ | ✓ |
+| `local_map_feedback_node` | — | — | ✓ |
 
 ## 配置
 

@@ -122,24 +122,56 @@ source install/setup.bash
 
 ## Run
 
-### Frontend only
+All three modes use the same rosbag remap to match the Livox topic names in
+the config (`/livox/lidar`, `/livox/imu`):
 
 ```bash
+ros2 bag play <bag_path> --clock \
+  --remap \
+    /livox/lidar_192_168_1_185:=/livox/lidar \
+    /livox/imu_192_168_1_185:=/livox/imu
+```
+
+### Mode 1: Frontend only
+
+Odometry + local map, no loop closure or PGO.  Enable the frontend's own PCD
+accumulator since there is no backend to provide a global map.
+
+```bash
+# Terminal 1: frontend (save_pcd:=true enables the PCD accumulator)
+ros2 launch small_point_lio frontend_bringup.launch.py save_pcd:=true
+
+# Terminal 2: rosbag playback (with remap, see above)
+```
+
+After playback, save the accumulated PCD:
+
+```bash
+ros2 service call /map_save std_srvs/srv/Trigger
+```
+
+### Mode 2: Frontend + backend (no local map feedback)
+
+Loop closure + PGO + global map + map→odom TF, but the backend does **not**
+feed corrected maps back to the frontend.  The frontend keeps running on its
+own iVox; the backend independently optimizes poses and publishes the
+corrected global map.
+
+```bash
+# Terminal 1: frontend
 ros2 launch small_point_lio frontend_bringup.launch.py
+
+# Terminal 2: backend (no feedback node)
+ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py
+
+# Terminal 3: rosbag playback (with remap, see above)
 ```
 
-Uses `small_point_lio/config/mid360.yaml` by default; `use_sim_time` defaults
-to `true` for rosbag playback. For other LiDARs, create a config based on the
-existing examples and pass it via `ros2 run`:
+### Mode 3: Frontend + backend (full SLAM with local map feedback)
 
-```bash
-ros2 run small_point_lio small_point_lio_node \
-  --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
-```
-
-### Frontend + backend (full SLAM with local map feedback)
-
-Three terminals are needed: frontend, backend, and rosbag playback.
+Adds the closed-loop local tracking-map feedback: the backend rebuilds a
+corrected iVox from PGO-optimized poses and sends it to the frontend, which
+hot-swaps its tracking map online.
 
 ```bash
 # Terminal 1: frontend (enables packet correction evidence + map feedback path)
@@ -150,22 +182,29 @@ ros2 launch small_point_lio frontend_bringup.launch.py \
 ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
   enable_local_map_feedback:=true
 
-# Terminal 3: rosbag playback
-ros2 bag play <bag_path> --clock
+# Terminal 3: rosbag playback (with remap, see above)
 ```
 
 `frontend_bringup.launch.py` accepts `use_sim_time` (default `true`), `rviz`
 (default `true`), `save_pcd` (default `false`), and
-`enable_local_map_feedback` (default `false`).
-
-### Backend only (loop closure + global map, no frontend feedback)
+`enable_local_map_feedback` (default `false`).  Uses
+`small_point_lio/config/mid360.yaml` by default.  For other LiDARs, create a
+config based on the existing examples and pass it via `ros2 run`:
 
 ```bash
-ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py
+ros2 run small_point_lio small_point_lio_node \
+  --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
 ```
 
-This runs the keyframe bridge, loop detector, and map node without the local
-map feedback node.
+### What each mode starts
+
+| Node | Mode 1 | Mode 2 | Mode 3 |
+|---|---|---|---|
+| `small_point_lio_node` | ✓ | ✓ | ✓ |
+| `keyframe_bridge_node` | — | ✓ | ✓ |
+| `loop_detector_node` | — | ✓ | ✓ |
+| `map_node` | — | ✓ | ✓ |
+| `local_map_feedback_node` | — | — | ✓ |
 
 ## Configuration
 
