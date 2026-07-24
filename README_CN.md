@@ -112,29 +112,37 @@ source install/setup.bash
 ### 仅前端
 
 ```bash
-ros2 launch small_point_lio small_point_lio.launch.py
+ros2 launch small_point_lio frontend_bringup.launch.py
 ```
 
-默认使用 `small_point_lio/config/mid360.yaml`。其他雷达请参照现有示例创建
-配置文件，通过 `ros2 run` 指定：
+默认使用 `small_point_lio/config/mid360.yaml`，`use_sim_time` 默认为 `true`
+（方便 rosbag 回放）。其他雷达请参照现有示例创建配置文件，通过 `ros2 run` 指定：
 
 ```bash
 ros2 run small_point_lio small_point_lio_node \
   --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
 ```
 
-### 前端 + 后端（完整 SLAM）
+### 前端 + 后端（完整 SLAM，含局部地图反馈）
+
+需要三个终端：前端、后端、rosbag 回放。
 
 ```bash
-# 终端 1：前端
-ros2 launch small_point_lio small_point_lio.launch.py
+# 终端 1：前端（启用 packet 级修正证据 + 地图反馈通路）
+ros2 launch small_point_lio frontend_bringup.launch.py \
+  enable_local_map_feedback:=true
 
-# 终端 2：后端（含局部地图反馈）
+# 终端 2：后端 PGO（回环检测 + 位姿图 + 局部地图反馈节点）
 ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
   enable_local_map_feedback:=true
+
+# 终端 3：rosbag 回放
+ros2 bag play <bag_path> --clock
 ```
 
-回放 rosbag 时，在两个 launch 命令中都加上 `use_sim_time:=true`。
+`frontend_bringup.launch.py` 支持 `use_sim_time`（默认 `true`）、`rviz`
+（默认 `true`）、`save_pcd`（默认 `false`）、`enable_local_map_feedback`
+（默认 `false`）等参数。
 
 ### 仅后端（回环 + 全局地图，无前端反馈）
 

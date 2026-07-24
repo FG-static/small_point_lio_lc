@@ -810,6 +810,7 @@ namespace small_point_lio_pgo {
                     }));
             double max_local_translation_delta = 0.0;
             double max_local_rotation_deg_delta = 0.0;
+            // 最后一个被全局 PGO 覆盖的索引
             int anchor_index = -1;
             for (int index = static_cast<int>(job.active_frames.size()) - 1; index >= 0; -- index) {
 
@@ -821,6 +822,7 @@ namespace small_point_lio_pgo {
             }
             if (anchor_index >= 0) {
 
+                // 通过 frame 得到 位姿
                 const auto baseline_pose =
                     [this, &latest](const FrameSnapshot &frame) {
 
@@ -833,6 +835,7 @@ namespace small_point_lio_pgo {
                         return frame.raw_pose;
                     };
 
+                // 锚点关键帧
                 const FrameSnapshot &anchor =
                     job.active_frames[static_cast<size_t>(anchor_index)];
 
@@ -845,9 +848,13 @@ namespace small_point_lio_pgo {
 
                     if (!frame.pgo_covered) continue;
 
+                    // 对于滑窗内所有的帧
                     const Eigen::Isometry3d baseline = baseline_pose(frame);
+                    // 全局 PGO 优化前的与 anchor 帧间形变量
                     const Eigen::Isometry3d old_relative = baseline_anchor.inverse() * baseline;
+                    // 全局 PGO 优化后的与 anchor 帧间形变量
                     const Eigen::Isometry3d new_relative = new_anchor.inverse() * frame.initial_pose;
+                    // 如果全局 PGO 对所有帧都是刚体变换，那么 delta 的结果是 0 （意味着帧间几何关系/连续性一致，刚体变换会抵消），否则非 0
                     const Eigen::Isometry3d delta = old_relative.inverse() * new_relative;
                     const double translation_delta = delta.translation().norm();
                     const double rotation_deg_delta = rotation_angle(delta.rotation()) * 180.0 / M_PI;
@@ -860,6 +867,7 @@ namespace small_point_lio_pgo {
                         rotation_deg_delta >=
                                 max_local_rotation_deg_threshold_) {
 
+                        // reanchor 模式是为了修正全局 PGO 的错误优化，大部分情况下 small_correction 已够用
                         job.pgo_reanchor = true;
                     }
                 }

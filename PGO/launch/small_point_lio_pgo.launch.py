@@ -33,7 +33,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "use_sim_time",
-                default_value="false",
+                default_value="true",
                 description="Use /clock, for example during rosbag playback",
             ),
             DeclareLaunchArgument(

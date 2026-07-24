@@ -125,29 +125,38 @@ source install/setup.bash
 ### Frontend only
 
 ```bash
-ros2 launch small_point_lio small_point_lio.launch.py
+ros2 launch small_point_lio frontend_bringup.launch.py
 ```
 
-Uses `small_point_lio/config/mid360.yaml` by default. For other LiDARs,
-create a config based on the existing examples and pass it via `ros2 run`:
+Uses `small_point_lio/config/mid360.yaml` by default; `use_sim_time` defaults
+to `true` for rosbag playback. For other LiDARs, create a config based on the
+existing examples and pass it via `ros2 run`:
 
 ```bash
 ros2 run small_point_lio small_point_lio_node \
   --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
 ```
 
-### Frontend + backend (full SLAM)
+### Frontend + backend (full SLAM with local map feedback)
+
+Three terminals are needed: frontend, backend, and rosbag playback.
 
 ```bash
-# Terminal 1: frontend
-ros2 launch small_point_lio small_point_lio.launch.py
+# Terminal 1: frontend (enables packet correction evidence + map feedback path)
+ros2 launch small_point_lio frontend_bringup.launch.py \
+  enable_local_map_feedback:=true
 
-# Terminal 2: backend with local map feedback
+# Terminal 2: backend PGO (loop closure + pose graph + local map feedback node)
 ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
   enable_local_map_feedback:=true
+
+# Terminal 3: rosbag playback
+ros2 bag play <bag_path> --clock
 ```
 
-For rosbag playback, add `use_sim_time:=true` to both launch commands.
+`frontend_bringup.launch.py` accepts `use_sim_time` (default `true`), `rviz`
+(default `true`), `save_pcd` (default `false`), and
+`enable_local_map_feedback` (default `false`).
 
 ### Backend only (loop closure + global map, no frontend feedback)
 
