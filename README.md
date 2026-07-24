@@ -1,7 +1,9 @@
 # Small Point-LIO LC
 
+**English** | [中文](README_CN.md)
+
 Small Point-LIO LC is a complete LiDAR-Inertial SLAM system built on
-[Small Point-LIO](https://github.com/Ecstasy-EC/Small-Point-LIO) (an advanced
+[Small Point-LIO](https://github.com/Yancey2023/small_point_lio) (an advanced
 Point-LIO implementation with 2-3x speed improvement), extended with loop
 closure detection, pose-graph optimization, global map reconstruction, and a
 closed-loop local tracking-map feedback mechanism that corrects frontend drift
