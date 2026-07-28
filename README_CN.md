@@ -252,7 +252,7 @@ ros2 service call /map_save std_srvs/srv/Trigger
 ### 后端全局地图（PGO 修正后）
 
 ```bash
-ros2 service call /save_map std_srvs/srv/Trigger
+ros2 service call /map_save_lc std_srvs/srv/Trigger
 ```
 
 PCD 文件写入 `PGO/config/map.yaml` 中配置的路径（`map_save_path`）。

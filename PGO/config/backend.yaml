@@ -67,26 +67,26 @@ small_point_lio_pgo_loop_detector:
     loop_min_keyframe_gap: 20
     # Minimum accumulated odometry travel from history to current, in meters.
     loop_min_travel_distance: 24.0
-    loop_iris_distance_thresh: 0.35 # IRIS DIST GATE
+    loop_iris_distance_thresh: 0.40 # IRIS DIST GATE
     loop_gicp_enable: true
     # Mean squared nearest-neighbor distance inside max correspondence range.
-    loop_gicp_score_thresh: 0.15 # BOUNDED GICP SCORE GATE
+    loop_gicp_score_thresh: 0.23 # BOUNDED GICP SCORE GATE
     loop_gicp_max_correction_trans: 3.5
     loop_gicp_max_correction_rot_deg: 25.0
     loop_gicp_selection_correction_trans_weight: 0.1
     loop_gicp_selection_correction_rot_weight: 0.0
     loop_gicp_use_submap: true
-    loop_gicp_submap_keyframes: 7
-    loop_gicp_submap_leaf_size: 0.15
+    loop_gicp_submap_keyframes: 5
+    loop_gicp_submap_leaf_size: 0.25
     loop_gicp_num_threads: 4
     loop_gicp_correspondence_randomness: 20
     loop_gicp_max_correspondence_distance: 1.5
-    loop_gicp_max_iterations: 40
+    loop_gicp_max_iterations: 20
     loop_gicp_rotation_epsilon: 0.002
     loop_gicp_transformation_epsilon: 0.001
     # A finite transform is not enough: loop GICP must converge with enough overlap.
     loop_gicp_min_inliers: 100
-    loop_gicp_min_inlier_ratio: 0.85
+    loop_gicp_min_inlier_ratio: 0.50
     loop_gicp_max_registration_error: 20000.0
     pgo_enable: true
     pgo_optimize_on_loop: true
@@ -112,9 +112,9 @@ small_point_lio_pgo_loop_detector:
     pgo_loop_info_max_scale: 1.0
     pgo_loop_robust_kernel_enable: true
     pgo_loop_robust_kernel_delta: 1.0
-    # gravity_preserving uses GICP x/y/yaw but keeps frontend z/roll/pitch.
-    # Set full_se3 only when the loop registration is reliable in all 6 DoF.
-    pgo_loop_measurement_mode: "gravity_preserving" # gravity_preserving / full_se3
+    # gravity_preserving: GICP x/y/yaw; gravity_preserving_xyz: GICP x/y/z/yaw.
+    # Both preserve frontend roll/pitch; full_se3 uses all 6 DoF from GICP.
+    pgo_loop_measurement_mode: "gravity_preserving_xyz"
     lcd_retrieval_enable: true
     lcd_retrieval_top_k: 120
     lcd_retrieval_max_distance: -1.0
@@ -136,5 +136,5 @@ small_point_lio_pgo_loop_detector:
     cart_use_align_key: true
     cart_align_search_ratio: 0.04
     cart_candidate_top_k: 10
-    loop_descriptor_verify_top_k: 5
+    loop_descriptor_verify_top_k: 2
     cart_distance_thresh: 0.40 # CART DIST GATE

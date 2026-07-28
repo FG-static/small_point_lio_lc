@@ -72,7 +72,7 @@ namespace small_point_lio_pgo {
         this->declare_parameter("map_frame", map_frame_);
         this->declare_parameter("odom_frame", odom_frame_);
         this->declare_parameter("keyframe_topic", "/keyframe_msg");
-        this->declare_parameter("save_map_service_name", "/save_map");
+        this->declare_parameter("save_map_service_name", "/map_save_lc");
         this->declare_parameter("map_save_path", "/home/goose/small_point_lio_lc/global_map.pcd");
         this->declare_parameter("optimized_keyframes_topic", "/optimized_keyframes");
         this->declare_parameter("body_frame", body_frame_);

@@ -1,0 +1,61 @@
+# garage_ros2_bag 专用参数。
+# 该数据集的 sensor_msgs/Imu.linear_acceleration 单位为 g，而不是 m/s^2。
+# 前端会使用 gravity.norm() / acc_norm 将原始加速度换算为 m/s^2，
+# 因此此处 acc_norm 必须保持为 1.0，不能再额外乘 9.81。
+small_point_lio:
+    ros__parameters:
+        lidar_topic: /livox/lidar
+        imu_topic: /livox/imu
+        lidar_type: livox_pointcloud2
+        lidar_frame: livox_frame
+        save_pcd: true
+
+        # 点云过滤
+        point_filter_num: 1
+        min_distance: 0.5
+        max_distance: 800.0
+        space_downsample: true
+        space_downsample_leaf_size: 0.2
+
+        # IMU 处理
+        gravity: [0.0, 0.0, -9.810]
+        fix_gravity_direction: true
+        check_satu: true
+        satu_acc: 3.0                       # 原始单位为 g，对应约 3 g
+        satu_gyro: 35.0
+        acc_norm: 1.0                       # 静止模长约 1 g，内部换算为 9.81 m/s^2
+
+        # 地图
+        map_resolution: 0.2
+        init_map_size: 10
+
+        # 雷达与 IMU 相对位姿
+        extrinsic_est_en: false
+        extrinsic_T: [-0.011, -0.02329, 0.04412]
+        extrinsic_R: [1.0, 0.0, 0.0,
+                      0.0, 1.0, 0.0,
+                      0.0, 0.0, 1.0]
+
+        # 滤波器参数
+        laser_point_cov: 0.01
+        imu_meas_acc_cov: 0.01
+        imu_meas_omg_cov: 0.01
+        velocity_cov: 20.0
+        acceleration_cov: 500.0
+        omg_cov: 1000.0
+        ba_cov: 0.0001
+        bg_cov: 0.0001
+        plane_threshold: 0.1
+        match_sqaured: 81.0
+
+        # 数据发布
+        publish_odometry_without_downsample: false
+
+        # 局部历史一致性反馈
+        local_map_feedback_enable: false
+        scan_to_map_correction_topic: "/pointlio_scan_to_map_correction"
+        local_tracking_map_topic: "/local_tracking_map"
+        local_map_tail_journal_max_points: 300000
+        local_map_tail_journal_duration_sec: 10.0
+        local_map_max_apply_lag_translation_m: 0.10
+        local_map_max_apply_lag_rotation_deg: 1.0

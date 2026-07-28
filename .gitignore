@@ -10,6 +10,9 @@ rosbag/
 *.mcap
 *.sqlite3
 *.pcd
+*.ply
+symlink_install_manifest.txt
+第一题程序设计报告.md
 
 # Local tooling and editor state
 .codegraph/

@@ -104,7 +104,7 @@ namespace small_point_lio_pgo {
             sub_imu_ =
                 create_subscription<sensor_msgs::msg::Imu>(
                     gravity_align_imu_topic_,
-                    rclcpp::SensorDataQoS(),
+                    rclcpp::QoS(100).reliable(),
                     [this](sensor_msgs::msg::Imu::SharedPtr msg) {
                         callbackImu(msg);
                     }
@@ -114,7 +114,7 @@ namespace small_point_lio_pgo {
         sub_keyframe_ =
             create_subscription<small_point_lio_pgo::msg::KeyFrame>(
                 keyframe_topic_,
-                rclcpp::SensorDataQoS(),
+                rclcpp::QoS(100).reliable(),
                 [this](small_point_lio_pgo::msg::KeyFrame::SharedPtr msg) {
                     callbackKeyFrame(msg);
                 }
@@ -672,11 +672,13 @@ namespace small_point_lio_pgo {
             }
         );
         if (pgo_loop_measurement_mode_ != "gravity_preserving" &&
+            pgo_loop_measurement_mode_ != "gravity_preserving_xyz" &&
             pgo_loop_measurement_mode_ != "full_se3") {
 
             RCLCPP_WARN(
                 get_logger(),
-                "pgo_loop_measurement_mode must be gravity_preserving or full_se3, "
+                "pgo_loop_measurement_mode must be gravity_preserving, "
+                "gravity_preserving_xyz or full_se3, "
                 "got '%s'; using gravity_preserving",
                 pgo_loop_measurement_mode_.c_str()
             );
@@ -2996,15 +2998,16 @@ namespace small_point_lio_pgo {
         if (pgo_loop_measurement_mode_ == "full_se3")
             return full_measurement;
 
-        // 坡道上的局部点云容易让 GICP 在 z/roll/pitch 上退化。默认模式只取
-        // GICP 的世界系 x/y 和绕重力轴 yaw，沿用 LIO/IMU 给出的高度与坡度。
+        // 两种重力保持模式都沿用 LIO/IMU 的 roll/pitch，只采用 GICP 的 yaw；
+        // gravity_preserving_xyz 额外采用 GICP 的世界系 z。
         Eigen::Isometry3d T_world_current_projected = T_world_current;
         T_world_current_projected.translation().x() =
             T_world_current_from_gicp.translation().x();
         T_world_current_projected.translation().y() =
             T_world_current_from_gicp.translation().y();
-        T_world_current_projected.translation().z() =
-            T_world_current.translation().z();
+        if (pgo_loop_measurement_mode_ == "gravity_preserving_xyz")
+            T_world_current_projected.translation().z() =
+                T_world_current_from_gicp.translation().z();
 
         const double yaw_correction =
             std::atan2(R_world_correction(1, 0), R_world_correction(0, 0));
