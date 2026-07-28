@@ -242,6 +242,10 @@ namespace small_point_lio_pgo {
         declare_parameter("loop_min_keyframe_gap", loop_min_keyframe_gap_);
         declare_parameter("loop_min_travel_distance", loop_min_travel_distance_);
         declare_parameter("loop_iris_distance_thresh", loop_iris_distance_thresh_);
+        declare_parameter(
+            "loop_history_max_current_matches",
+            loop_history_max_current_matches_
+        );
         declare_parameter("loop_gicp_enable", loop_gicp_enable_);
         declare_parameter("loop_gicp_score_thresh", loop_gicp_score_thresh_);
         declare_parameter("loop_gicp_max_correction_trans", loop_gicp_max_correction_trans_);
@@ -407,6 +411,10 @@ namespace small_point_lio_pgo {
         get_parameter("loop_min_keyframe_gap", loop_min_keyframe_gap_);
         get_parameter("loop_min_travel_distance", loop_min_travel_distance_);
         get_parameter("loop_iris_distance_thresh", loop_iris_distance_thresh_);
+        get_parameter(
+            "loop_history_max_current_matches",
+            loop_history_max_current_matches_
+        );
         get_parameter("loop_gicp_enable", loop_gicp_enable_);
         get_parameter("loop_gicp_score_thresh", loop_gicp_score_thresh_);
         get_parameter("loop_gicp_max_correction_trans", loop_gicp_max_correction_trans_);
@@ -537,6 +545,8 @@ namespace small_point_lio_pgo {
 
         // 对会直接影响运行稳定性的参数做兜底，避免非法配置让
         // GICP、Cart Context 或 PGO 在运行中崩掉。
+        if (loop_history_max_current_matches_ < 0)
+            loop_history_max_current_matches_ = 0;
         if (loop_gicp_submap_keyframes_ < 1)
             loop_gicp_submap_keyframes_ = 1;
         if (!std::isfinite(loop_gicp_submap_leaf_size_) ||
@@ -848,6 +858,11 @@ namespace small_point_lio_pgo {
         );
         RCLCPP_INFO(
             get_logger(),
+            "Loop history reuse limit: max_current_matches=%d",
+            loop_history_max_current_matches_
+        );
+        RCLCPP_INFO(
+            get_logger(),
             "Cart Context: enabled=%d unit=[%.3f %.3f] range=[%.1f %.1f] "
             "voxel=%.3f align_key=%d align_ratio=%.3f "
             "retrieval=%d retrieval_top_k=%d retrieval_max_dist=%.3f "
@@ -1094,6 +1109,23 @@ namespace small_point_lio_pgo {
                         accepted_candidate.gicp_correction_rot_deg,
                         candidates.size(),
                         verified_count
+                    );
+
+                    int &selected_count =
+                        history_selected_counts_[accepted_candidate.history_id];
+                    ++ selected_count;
+                    RCLCPP_INFO(
+                        get_logger(),
+                        "Loop history selected: current=%u history=%u count=%d/%d "
+                        "retrieval_disabled=%d",
+                        accepted_candidate.current_id,
+                        accepted_candidate.history_id,
+                        selected_count,
+                        loop_history_max_current_matches_,
+                        loop_history_max_current_matches_ > 0 &&
+                            selected_count >= loop_history_max_current_matches_
+                            ? 1
+                            : 0
                     );
                 } else {
 
@@ -2833,6 +2865,12 @@ namespace small_point_lio_pgo {
         const LoopKeyFrame &current,
         const LoopKeyFrame &history
     ) const {
+
+        const auto selected_it = history_selected_counts_.find(history.id);
+        if (loop_history_max_current_matches_ > 0 &&
+            selected_it != history_selected_counts_.end() &&
+            selected_it->second >= loop_history_max_current_matches_)
+            return false;
 
         const int64_t id_gap =
             std::llabs(

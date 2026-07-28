@@ -68,6 +68,8 @@ small_point_lio_pgo_loop_detector:
     # Minimum accumulated odometry travel from history to current, in meters.
     loop_min_travel_distance: 24.0
     loop_iris_distance_thresh: 0.40 # IRIS DIST GATE
+    # Count final GICP selections before loop-edge sparsification; 0 disables the limit.
+    loop_history_max_current_matches: 2
     loop_gicp_enable: true
     # Mean squared nearest-neighbor distance inside max correspondence range.
     loop_gicp_score_thresh: 0.23 # BOUNDED GICP SCORE GATE

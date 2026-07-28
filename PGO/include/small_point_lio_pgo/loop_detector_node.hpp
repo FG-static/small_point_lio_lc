@@ -28,6 +28,7 @@
 #include <mutex>
 #include <rclcpp/publisher.hpp>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -347,6 +348,7 @@ namespace small_point_lio_pgo {
         int loop_min_keyframe_gap_ = 0;
         double loop_min_travel_distance_ = 8.0;
         float loop_iris_distance_thresh_ = 0.30F;
+        int loop_history_max_current_matches_ = 2;
         bool loop_gicp_enable_ = true;
         double loop_gicp_score_thresh_ = 1.0;
         double loop_gicp_max_correction_trans_ = 3.0;
@@ -457,6 +459,8 @@ namespace small_point_lio_pgo {
         uint64_t iris_failures_ = 0;
         uint64_t candidate_hits_ = 0;
         uint64_t candidate_misses_ = 0;
+        // 记录每个历史帧被选为最终回环候选的次数。
+        std::unordered_map<uint32_t, int> history_selected_counts_;
         double accumulated_travel_distance_ = 0.0;
         // Keyframe gate compares incoming raw poses; never store the gravity-aligned pose here.
         geometry_msgs::msg::Pose last_accepted_keyframe_raw_pose_;
