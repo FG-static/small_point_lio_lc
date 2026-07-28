@@ -214,7 +214,8 @@ namespace small_point_lio_pgo {
         );
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr buildLoopGicpSubmap(
-            const LoopKeyFrame &anchor
+            const LoopKeyFrame &anchor,
+            bool bidirectional
         ) const;
 
         bool appendKeyFrameToSubmap(

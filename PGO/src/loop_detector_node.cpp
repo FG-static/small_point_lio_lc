@@ -2331,11 +2331,11 @@ namespace small_point_lio_pgo {
     }
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr LoopDetectorNode::buildLoopGicpSubmap(
-        const LoopKeyFrame &anchor
+        const LoopKeyFrame &anchor,
+        const bool bidirectional
     ) const {
 
-        // 以 anchor 的 lidar 坐标系为局部坐标，累积 anchor 及其前序关键帧。
-        // 这样 loop 验证可以使用局部子图，而不是单帧稀疏点云。
+        // current 只累积前序帧；history 已有完整轨迹，可围绕锚点双向取帧。
         auto submap = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
         const int max_frames = std::max(1, loop_gicp_submap_keyframes_);
 
@@ -2353,15 +2353,54 @@ namespace small_point_lio_pgo {
             }
         }
 
-        int index = anchor_index >= 0
-            ? anchor_index - 1
-            : static_cast<int>(keyframes_.size()) - 1;
+        if (bidirectional && anchor_index >= 0) {
 
-        while (used < max_frames && index >= 0) {
+            int offset = 1;
+            while (used < max_frames) {
 
-            if (appendKeyFrameToSubmap(anchor, keyframes_[static_cast<size_t>(index)], *submap))
-                ++used;
-            --index;
+                bool has_neighbor = false;
+                const int previous_index = anchor_index - offset;
+                if (previous_index >= 0) {
+
+                    has_neighbor = true;
+                    if (appendKeyFrameToSubmap(
+                            anchor,
+                            keyframes_[static_cast<size_t>(previous_index)],
+                            *submap))
+                        ++used;
+                }
+
+                const int next_index = anchor_index + offset;
+                if (used < max_frames &&
+                    next_index < static_cast<int>(keyframes_.size())) {
+
+                    has_neighbor = true;
+                    if (appendKeyFrameToSubmap(
+                            anchor,
+                            keyframes_[static_cast<size_t>(next_index)],
+                            *submap))
+                        ++used;
+                }
+
+                if (!has_neighbor)
+                    break;
+                ++offset;
+            }
+        } else {
+
+            int index = anchor_index >= 0
+                ? anchor_index - 1
+                : static_cast<int>(keyframes_.size()) - 1;
+
+            while (used < max_frames && index >= 0) {
+
+                if (appendKeyFrameToSubmap(
+                        anchor,
+                        keyframes_[static_cast<size_t>(index)],
+                        *submap))
+                    ++used;
+                --index;
+            }
         }
 
         if (submap->empty())
@@ -2489,8 +2528,8 @@ namespace small_point_lio_pgo {
         pcl::PointCloud<pcl::PointXYZ>::Ptr target_cloud = history->cloud;
         if (loop_gicp_use_submap_) {
 
-            source_cloud = buildLoopGicpSubmap(current);
-            target_cloud = buildLoopGicpSubmap(*history);
+            source_cloud = buildLoopGicpSubmap(current, false);
+            target_cloud = buildLoopGicpSubmap(*history, true);
             if (!source_cloud || source_cloud->empty() ||
                 !target_cloud || target_cloud->empty()) {
 

@@ -136,5 +136,5 @@ small_point_lio_pgo_loop_detector:
     cart_use_align_key: true
     cart_align_search_ratio: 0.04
     cart_candidate_top_k: 10
-    loop_descriptor_verify_top_k: 2
+    loop_descriptor_verify_top_k: 4
     cart_distance_thresh: 0.40 # CART DIST GATE
