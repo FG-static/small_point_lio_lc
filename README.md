@@ -234,12 +234,19 @@ Key parameters:
 | Parameter | Default | Description |
 |---|---|---|
 | `kf_trans_thresh` / `kf_rot_thresh` | `1.5` / `0.3` | Keyframe selection thresholds (m / rad) |
-| `loop_iris_distance_thresh` | `0.35` | LidarIris distance gate |
+| `loop_iris_distance_thresh` | `0.40` | LidarIris distance gate |
 | `cart_distance_thresh` | `0.40` | CartContext distance gate |
-| `loop_gicp_score_thresh` | `0.15` | Bounded GICP score gate |
-| `loop_gicp_min_inlier_ratio` | `0.85` | Minimum GICP inlier ratio |
-| `pgo_loop_measurement_mode` | `gravity_preserving` | `gravity_preserving` or `full_se3` |
+| `loop_gicp_score_thresh` | `0.21` | Bounded GICP score gate |
+| `loop_gicp_min_inlier_ratio` | `0.50` | Minimum GICP inlier ratio |
+| `loop_gicp_submap_keyframes` | `5` | GICP submap neighbour frame count |
+| `loop_gicp_submap_leaf_size` | `0.25` | GICP submap voxel size (m) |
+| `loop_gicp_max_iterations` | `20` | GICP max iterations per trial |
+| `pgo_loop_measurement_mode` | `gravity_preserving_xyz` | `gravity_preserving` (x/y/yaw), `gravity_preserving_xyz` (x/y/z/yaw), or `full_se3` (all 6 DoF) |
 | `gravity_align_enable` | `true` | Align poses to IMU gravity |
+| `loop_history_max_current_matches` | `2` | Max loop edges per history keyframe before disabling its LCD retrieval (0 = disable) |
+| `loop_sequence_max_history_lag_m` | `3.0` | Max bilateral deviation between current and history travel progress (0 = disable) |
+| `loop_sequence_max_anchor_progress_m` | `15.0` | Max pending/anchor travel distance for sequence validity (0 = disable) |
+| `loop_descriptor_verify_top_k` | `4` | Top-k candidates sent to GICP after descriptor ranking |
 
 ### Local map feedback (`PGO/config/local_map_feedback.yaml`)
 
@@ -255,11 +262,21 @@ Key parameters:
 | `trigger_instant_enable` | `false` | Rebuild on single-packet jump |
 | `trigger_normal_enable` | `false` | Rebuild on accumulated drift |
 
+### Map node (`PGO/config/map.yaml`)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `map_leaf_size` | `0.20` | Global map voxel size (m) |
+| `keyframe_rebuild_interval` | `20` | Rebuild global map every N keyframes; PGO snapshots always trigger immediate rebuild |
+| `save_map_service_name` | `/map_save_lc` | ROS service name for saving PCD |
+| `map_save_path` | `.../global_map.pcd` | PCD output path |
+
 ## Save Map
 
 ### Frontend local map
 
-Set `save_pcd: true` in the frontend config, run the node, then:
+Set `save_pcd: true` in the frontend config (or pass `save_pcd:=true` to
+`frontend_bringup.launch.py`), run the node, then:
 
 ```bash
 ros2 service call /map_save std_srvs/srv/Trigger
@@ -268,7 +285,7 @@ ros2 service call /map_save std_srvs/srv/Trigger
 ### Backend global map (PGO-corrected)
 
 ```bash
-ros2 service call /save_map std_srvs/srv/Trigger
+ros2 service call /map_save_lc std_srvs/srv/Trigger
 ```
 
 The PCD is written to the path configured in `PGO/config/map.yaml`

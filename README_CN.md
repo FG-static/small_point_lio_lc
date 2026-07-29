@@ -218,12 +218,19 @@ ros2 run small_point_lio small_point_lio_node \
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `kf_trans_thresh` / `kf_rot_thresh` | `1.5` / `0.3` | 关键帧选取阈值（m / rad） |
-| `loop_iris_distance_thresh` | `0.35` | LidarIris 距离门限 |
+| `loop_iris_distance_thresh` | `0.40` | LidarIris 距离门限 |
 | `cart_distance_thresh` | `0.40` | CartContext 距离门限 |
-| `loop_gicp_score_thresh` | `0.15` | 有界 GICP 分数门限 |
-| `loop_gicp_min_inlier_ratio` | `0.85` | GICP 最小内点比例 |
-| `pgo_loop_measurement_mode` | `gravity_preserving` | `gravity_preserving` 或 `full_se3` |
+| `loop_gicp_score_thresh` | `0.21` | 有界 GICP 分数门限 |
+| `loop_gicp_min_inlier_ratio` | `0.50` | GICP 最小内点比例 |
+| `loop_gicp_submap_keyframes` | `5` | GICP 子图相邻关键帧数 |
+| `loop_gicp_submap_leaf_size` | `0.25` | GICP 子图体素大小（m） |
+| `loop_gicp_max_iterations` | `20` | GICP 每次试验最大迭代数 |
+| `pgo_loop_measurement_mode` | `gravity_preserving_xyz` | `gravity_preserving`（x/y/yaw）、`gravity_preserving_xyz`（x/y/z/yaw）、`full_se3`（全 6 自由度） |
 | `gravity_align_enable` | `true` | 将位姿对齐到 IMU 重力方向 |
+| `loop_history_max_current_matches` | `2` | 每个 history 关键帧最大回环边数，超过后停用其 LCD 检索（0 = 关闭） |
+| `loop_sequence_max_history_lag_m` | `3.0` | current 与 history 有向里程进度的最大双边偏差（0 = 关闭） |
+| `loop_sequence_max_anchor_progress_m` | `15.0` | pending 等待距离和正式序列锚点的有效距离（0 = 不失效） |
+| `loop_descriptor_verify_top_k` | `4` | 描述子排序后送入 GICP 验证的 top-k 数量 |
 
 ### 局部地图反馈（`PGO/config/local_map_feedback.yaml`）
 
@@ -239,11 +246,21 @@ ros2 run small_point_lio small_point_lio_node \
 | `trigger_instant_enable` | `false` | 单 packet 跳变触发重建 |
 | `trigger_normal_enable` | `false` | 累计漂移触发重建 |
 
+### 地图节点（`PGO/config/map.yaml`）
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `map_leaf_size` | `0.20` | 全局地图体素大小（m） |
+| `keyframe_rebuild_interval` | `20` | 每收到 N 个关键帧才重建一次全局地图；PGO 快照始终立即重建 |
+| `save_map_service_name` | `/map_save_lc` | 保存 PCD 的 ROS 服务名 |
+| `map_save_path` | `.../global_map.pcd` | PCD 输出路径 |
+
 ## 保存地图
 
 ### 前端局部地图
 
-在前端配置中设置 `save_pcd: true`，运行节点后调用：
+在前端配置中设置 `save_pcd: true`（或给 `frontend_bringup.launch.py` 传
+`save_pcd:=true`），运行节点后调用：
 
 ```bash
 ros2 service call /map_save std_srvs/srv/Trigger
