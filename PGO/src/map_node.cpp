@@ -89,6 +89,10 @@ namespace small_point_lio_pgo {
             "optimized_keyframes_tail_exclusion_count",
             optimized_keyframes_tail_exclusion_count_
         );
+        this->declare_parameter(
+            "keyframe_rebuild_interval",
+            keyframe_rebuild_interval_
+        );
 
         this->get_parameter("map_leaf_size", map_leaf_size_);
         this->get_parameter("map_topic", map_topic_);
@@ -114,6 +118,12 @@ namespace small_point_lio_pgo {
         );
         if (optimized_keyframes_tail_exclusion_count_ < 0)
             optimized_keyframes_tail_exclusion_count_ = 0;
+        this->get_parameter(
+            "keyframe_rebuild_interval",
+            keyframe_rebuild_interval_
+        );
+        if (keyframe_rebuild_interval_ < 1)
+            keyframe_rebuild_interval_ = 1;
         if (map_frame_.empty())
             map_frame_ = "map";
         if (odom_frame_.empty())
@@ -208,12 +218,14 @@ namespace small_point_lio_pgo {
             "Map frames: map=%s raw_keyframes=%s; "
             "rebuild_unoptimized_keyframes_with_approximation=%d "
             "apply_pgo_correction_to_unoptimized_keyframes=%d "
-            "optimized_keyframes_tail_exclusion_count=%d",
+            "optimized_keyframes_tail_exclusion_count=%d "
+            "keyframe_rebuild_interval=%d",
             map_frame_.c_str(),
             odom_frame_.c_str(),
             rebuild_unoptimized_keyframes_with_approximation_ ? 1 : 0,
             apply_pgo_correction_to_unoptimized_keyframes_ ? 1 : 0,
-            optimized_keyframes_tail_exclusion_count_
+            optimized_keyframes_tail_exclusion_count_,
+            keyframe_rebuild_interval_
         );
     }
 
@@ -270,7 +282,12 @@ namespace small_point_lio_pgo {
                 }
             }
 
-            rebuildMap(rclcpp::Time(msg->header.stamp));
+            ++keyframes_since_last_rebuild_;
+            if (keyframes_since_last_rebuild_ >=
+                keyframe_rebuild_interval_) {
+                keyframes_since_last_rebuild_ = 0;
+                rebuildMap(rclcpp::Time(msg->header.stamp));
+            }
         }
     }
 
@@ -387,6 +404,7 @@ namespace small_point_lio_pgo {
             );
         }
 
+        keyframes_since_last_rebuild_ = 0;
         rebuildMap(rclcpp::Time(msg->header.stamp));
     }
 

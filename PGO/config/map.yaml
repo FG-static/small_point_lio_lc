@@ -6,6 +6,8 @@ map_node:
         optimized_keyframes_topic: "/optimized_keyframes"
         rebuild_unoptimized_keyframes_with_approximation: true
         apply_pgo_correction_to_unoptimized_keyframes: true
+        # 每收到 N 个关键帧才重建一次全局地图；PGO 快照始终立即重建。
+        keyframe_rebuild_interval: 20
         body_frame: "base_link"
         lidar_frame: "livox_frame"
         t_body_lidar: [-0.011, -0.02329, 0.04412]

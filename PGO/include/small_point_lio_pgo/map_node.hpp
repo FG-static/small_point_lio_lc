@@ -94,6 +94,8 @@ namespace small_point_lio_pgo {
         bool rebuild_unoptimized_keyframes_with_approximation_ = true;
         bool apply_pgo_correction_to_unoptimized_keyframes_ = true;
         int optimized_keyframes_tail_exclusion_count_ = 0;
+        int keyframe_rebuild_interval_ = 20;
+        int keyframes_since_last_rebuild_ = 0;
     };
 } // small_point_lio_pgo
 
