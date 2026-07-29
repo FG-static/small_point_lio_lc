@@ -68,11 +68,15 @@ small_point_lio_pgo_loop_detector:
     # Minimum accumulated odometry travel from history to current, in meters.
     loop_min_travel_distance: 24.0
     loop_iris_distance_thresh: 0.40 # IRIS DIST GATE
-    # Count final GICP selections before loop-edge sparsification; 0 disables the limit.
+    # 稀疏化前统计最终候选；达到次数后停用该history检索，0表示关闭。
     loop_history_max_current_matches: 2
+    # current与有向history进度的最大双边偏差，0表示关闭。
+    loop_sequence_max_history_lag_m: 3.0
+    # 超过该前进距离后旧序列锚点失效，0表示不失效。
+    loop_sequence_max_anchor_progress_m: 50.0
     loop_gicp_enable: true
     # Mean squared nearest-neighbor distance inside max correspondence range.
-    loop_gicp_score_thresh: 0.23 # BOUNDED GICP SCORE GATE
+    loop_gicp_score_thresh: 0.21 # BOUNDED GICP SCORE GATE
     loop_gicp_max_correction_trans: 3.5
     loop_gicp_max_correction_rot_deg: 25.0
     loop_gicp_selection_correction_trans_weight: 0.1

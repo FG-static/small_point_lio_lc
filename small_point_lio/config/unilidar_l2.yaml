@@ -27,7 +27,7 @@ small_point_lio:
 
         # 雷达与IMU相对位姿
         extrinsic_est_en: false                     # 雷达与IMU的相对位姿是否通过预测得到
-        extrinsic_T: [0.007698, 0.014655, -0.00667] # ulhk # [-0.5, 1.4, 1.5] # utbm
+        extrinsic_T: [-0.011, -0.02329, 0.04412]
         extrinsic_R: [1.0, 0.0, 0.0,
                       0.0, 1.0, 0.0,
                       0.0, 0.0, 1.0]

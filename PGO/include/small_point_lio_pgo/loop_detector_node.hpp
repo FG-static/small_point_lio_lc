@@ -283,6 +283,13 @@ namespace small_point_lio_pgo {
             double &travel_gap
         ) const;
 
+        // 检查候选与上一条已入图回环边的双向轨迹进度是否一致。
+        bool passesLoopSequenceProgressGate(
+            const LoopKeyFrame &current,
+            const LoopCandidate &candidate,
+            double &history_lag
+        ) const;
+
         double optimizePoseGraphIfNeeded(
             bool has_new_loop
         );
@@ -349,6 +356,8 @@ namespace small_point_lio_pgo {
         double loop_min_travel_distance_ = 8.0;
         float loop_iris_distance_thresh_ = 0.30F;
         int loop_history_max_current_matches_ = 2;
+        double loop_sequence_max_history_lag_m_ = 5.0;
+        double loop_sequence_max_anchor_progress_m_ = 15.0;
         bool loop_gicp_enable_ = true;
         double loop_gicp_score_thresh_ = 1.0;
         double loop_gicp_max_correction_trans_ = 3.0;
@@ -468,6 +477,10 @@ namespace small_point_lio_pgo {
         bool has_last_accepted_keyframe_ = false;
         uint32_t last_added_loop_current_id_ = 0;
         double last_added_loop_current_travel_distance_ = 0.0;
+        uint32_t last_added_loop_history_id_ = 0;
+        double last_added_loop_history_travel_distance_ = 0.0;
+        // history沿当前行驶方向递增为+1，反向经过历史轨迹为-1。
+        double last_added_loop_history_direction_ = 1.0;
         bool has_last_added_loop_edge_ = false;
     };
 
