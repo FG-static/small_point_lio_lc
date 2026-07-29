@@ -26,6 +26,7 @@
 #include <memory>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <rclcpp/publisher.hpp>
 #include <string>
 #include <unordered_map>
@@ -211,7 +212,10 @@ namespace small_point_lio_pgo {
 
         bool verifyLoopCandidateByGicp(
             const LoopKeyFrame &current,
-            LoopCandidate &candidate
+            LoopCandidate &candidate,
+            bool current_submap_bidirectional = false,
+            pcl::PointCloud<pcl::PointXYZ>::Ptr cached_history_submap = nullptr,
+            pcl::PointCloud<pcl::PointXYZ>::Ptr *history_submap_used = nullptr
         );
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr buildLoopGicpSubmap(
@@ -290,6 +294,16 @@ namespace small_point_lio_pgo {
             double &history_lag
         ) const;
 
+        bool isPendingLoopSequenceConsistent(
+            const LoopCandidate &pending,
+            const LoopCandidate &current,
+            double &current_progress,
+            double &history_progress,
+            double &history_lag,
+            double &pending_direction,
+            double &current_direction
+        ) const;
+
         double optimizePoseGraphIfNeeded(
             bool has_new_loop
         );
@@ -358,6 +372,7 @@ namespace small_point_lio_pgo {
         int loop_history_max_current_matches_ = 2;
         double loop_sequence_max_history_lag_m_ = 5.0;
         double loop_sequence_max_anchor_progress_m_ = 15.0;
+        bool loop_sequence_pending_reverify_enable_ = false;
         bool loop_gicp_enable_ = true;
         double loop_gicp_score_thresh_ = 1.0;
         double loop_gicp_max_correction_trans_ = 3.0;
@@ -468,7 +483,7 @@ namespace small_point_lio_pgo {
         uint64_t iris_failures_ = 0;
         uint64_t candidate_hits_ = 0;
         uint64_t candidate_misses_ = 0;
-        // 记录每个历史帧被选为最终回环候选的次数。
+        // 记录每个历史帧成功写入PGO回环边的次数。
         std::unordered_map<uint32_t, int> history_selected_counts_;
         double accumulated_travel_distance_ = 0.0;
         // Keyframe gate compares incoming raw poses; never store the gravity-aligned pose here.
@@ -482,6 +497,9 @@ namespace small_point_lio_pgo {
         // history沿当前行驶方向递增为+1，反向经过历史轨迹为-1。
         double last_added_loop_history_direction_ = 1.0;
         bool has_last_added_loop_edge_ = false;
+        // 首条候选仅等待连续序列确认，不立即写入PGO。
+        std::optional<LoopCandidate> pending_loop_candidate_;
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pending_loop_history_submap_;
     };
 
 } // namespace small_point_lio_pgo

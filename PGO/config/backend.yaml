@@ -72,8 +72,10 @@ small_point_lio_pgo_loop_detector:
     loop_history_max_current_matches: 2
     # current与有向history进度的最大双边偏差，0表示关闭。
     loop_sequence_max_history_lag_m: 3.0
-    # 超过该前进距离后旧序列锚点失效，0表示不失效。
-    loop_sequence_max_anchor_progress_m: 50.0
+    # pending等待距离和正式序列锚点有效距离，0表示不失效。
+    loop_sequence_max_anchor_progress_m: 15.0
+    # 第二条候选一致时，仅重建pending current双向子图并复用首次history子图。
+    loop_sequence_pending_reverify_enable: true
     loop_gicp_enable: true
     # Mean squared nearest-neighbor distance inside max correspondence range.
     loop_gicp_score_thresh: 0.21 # BOUNDED GICP SCORE GATE
@@ -101,7 +103,7 @@ small_point_lio_pgo_loop_detector:
     # Scalar weights are compatibility fallbacks when a 6D diag below is invalid.
     pgo_loop_edge_weight: 120.0
     # Add a loop edge only when both the raw current ID gap and travel gap pass.
-    loop_edge_min_current_gap: 15
+    loop_edge_min_current_gap: 10
     loop_edge_min_travel_gap: 3.0 # meters along the odometry trajectory
     # Information matrix diagonal order: [x, y, z, roll, pitch, yaw].
     # Higher value means stronger trust in that DoF.

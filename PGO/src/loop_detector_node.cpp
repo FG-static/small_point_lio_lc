@@ -254,6 +254,10 @@ namespace small_point_lio_pgo {
             "loop_sequence_max_anchor_progress_m",
             loop_sequence_max_anchor_progress_m_
         );
+        declare_parameter(
+            "loop_sequence_pending_reverify_enable",
+            loop_sequence_pending_reverify_enable_
+        );
         declare_parameter("loop_gicp_enable", loop_gicp_enable_);
         declare_parameter("loop_gicp_score_thresh", loop_gicp_score_thresh_);
         declare_parameter("loop_gicp_max_correction_trans", loop_gicp_max_correction_trans_);
@@ -431,6 +435,10 @@ namespace small_point_lio_pgo {
             "loop_sequence_max_anchor_progress_m",
             loop_sequence_max_anchor_progress_m_
         );
+        get_parameter(
+            "loop_sequence_pending_reverify_enable",
+            loop_sequence_pending_reverify_enable_
+        );
         get_parameter("loop_gicp_enable", loop_gicp_enable_);
         get_parameter("loop_gicp_score_thresh", loop_gicp_score_thresh_);
         get_parameter("loop_gicp_max_correction_trans", loop_gicp_max_correction_trans_);
@@ -569,6 +577,15 @@ namespace small_point_lio_pgo {
         if (!std::isfinite(loop_sequence_max_anchor_progress_m_) ||
             loop_sequence_max_anchor_progress_m_ < 0.0)
             loop_sequence_max_anchor_progress_m_ = 0.0;
+        if (loop_sequence_pending_reverify_enable_ &&
+            (!loop_gicp_enable_ || !loop_gicp_use_submap_)) {
+
+            RCLCPP_WARN(
+                get_logger(),
+                "Disabling pending reverify: loop GICP submap is not enabled"
+            );
+            loop_sequence_pending_reverify_enable_ = false;
+        }
         if (loop_gicp_submap_keyframes_ < 1)
             loop_gicp_submap_keyframes_ = 1;
         if (!std::isfinite(loop_gicp_submap_leaf_size_) ||
@@ -882,10 +899,11 @@ namespace small_point_lio_pgo {
             get_logger(),
             "Loop history filters: max_current_matches=%d "
             "sequence_max_history_lag=%.3fm "
-            "sequence_max_anchor_progress=%.3fm",
+            "sequence_max_anchor_progress=%.3fm pending_reverify=%d",
             loop_history_max_current_matches_,
             loop_sequence_max_history_lag_m_,
-            loop_sequence_max_anchor_progress_m_
+            loop_sequence_max_anchor_progress_m_,
+            loop_sequence_pending_reverify_enable_ ? 1 : 0
         );
         RCLCPP_INFO(
             get_logger(),
@@ -1067,6 +1085,32 @@ namespace small_point_lio_pgo {
                 keyframe.travel_distance += step;
         }
 
+        if (loop_sequence_max_history_lag_m_ > 0.0 &&
+            has_last_added_loop_edge_ &&
+            loop_sequence_max_anchor_progress_m_ > 0.0) {
+
+            const double current_progress =
+                keyframe.travel_distance -
+                last_added_loop_current_travel_distance_;
+            if (std::isfinite(current_progress) &&
+                current_progress > loop_sequence_max_anchor_progress_m_) {
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "Loop sequence confirmed_expired: anchor=[%u->%u] "
+                    "current=%u progress=%.3f/%.3f",
+                    last_added_loop_current_id_,
+                    last_added_loop_history_id_,
+                    keyframe.id,
+                    current_progress,
+                    loop_sequence_max_anchor_progress_m_
+                );
+                has_last_added_loop_edge_ = false;
+                pending_loop_candidate_.reset();
+                pending_loop_history_submap_.reset();
+            }
+        }
+
         const bool pgo_node_added =
             pgo_enable_ && addKeyFrameToPoseGraph(keyframe);
 
@@ -1074,6 +1118,7 @@ namespace small_point_lio_pgo {
         // 轨迹进度最一致的一个候选进入 loop edge 阶段。
         bool added_loop_edge = false;
         LoopCandidate accepted_candidate;
+        pcl::PointCloud<pcl::PointXYZ>::Ptr accepted_history_submap;
         bool has_accepted_candidate = false;
         double accepted_sequence_abs_lag =
             std::numeric_limits<double>::infinity();
@@ -1105,9 +1150,17 @@ namespace small_point_lio_pgo {
                             sequence_history_lag))
                         continue;
 
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr
+                        candidate_history_submap;
                     const bool verified =
                         !loop_gicp_enable_ ||
-                        verifyLoopCandidateByGicp(keyframe, candidate);
+                        verifyLoopCandidateByGicp(
+                            keyframe,
+                            candidate,
+                            false,
+                            nullptr,
+                            &candidate_history_submap
+                        );
                     if (!verified)
                         continue;
                     ++ verified_count;
@@ -1138,6 +1191,8 @@ namespace small_point_lio_pgo {
                         (same_sequence && better_gicp)) {
 
                         accepted_candidate = candidate;
+                        accepted_history_submap =
+                            std::move(candidate_history_submap);
                         accepted_sequence_abs_lag = sequence_abs_lag;
                         has_accepted_candidate = true;
                     }
@@ -1167,24 +1222,6 @@ namespace small_point_lio_pgo {
                         accepted_candidate.gicp_correction_rot_deg,
                         candidates.size(),
                         verified_count
-                    );
-
-                    // 最终候选即使随后被稀疏化跳过，也会消耗history复用额度。
-                    int &selected_count =
-                        history_selected_counts_[accepted_candidate.history_id];
-                    ++ selected_count;
-                    RCLCPP_INFO(
-                        get_logger(),
-                        "Loop history selected: current=%u history=%u count=%d/%d "
-                        "retrieval_disabled=%d",
-                        accepted_candidate.current_id,
-                        accepted_candidate.history_id,
-                        selected_count,
-                        loop_history_max_current_matches_,
-                        loop_history_max_current_matches_ > 0 &&
-                            selected_count >= loop_history_max_current_matches_
-                            ? 1
-                            : 0
                     );
                 } else {
 
@@ -1219,10 +1256,141 @@ namespace small_point_lio_pgo {
         storeKeyFrame(std::move(keyframe));
         ++ stored_keyframes_;
 
+        bool candidate_ready_for_graph = has_accepted_candidate;
+        bool confirms_pending_sequence = false;
         if (has_accepted_candidate) {
 
-            loop_candidates_.push_back(accepted_candidate);
-            if (pgo_node_added && pgo_enable_) {
+            const bool sequence_confirmation_enabled =
+                loop_sequence_max_history_lag_m_ > 0.0;
+            auto replace_pending = [&](const char *event) {
+
+                pending_loop_candidate_ = accepted_candidate;
+                pending_loop_history_submap_ = accepted_history_submap;
+                candidate_ready_for_graph = false;
+                RCLCPP_INFO(
+                    get_logger(),
+                    "Loop sequence %s: pending=[%u->%u] history_points=%zu",
+                    event,
+                    accepted_candidate.current_id,
+                    accepted_candidate.history_id,
+                    pending_loop_history_submap_
+                        ? pending_loop_history_submap_->size()
+                        : 0U
+                );
+            };
+
+            if (sequence_confirmation_enabled &&
+                !has_last_added_loop_edge_) {
+
+                if (!pending_loop_candidate_) {
+
+                    replace_pending("pending_started");
+                } else {
+
+                    double current_progress =
+                        std::numeric_limits<double>::quiet_NaN();
+                    double history_progress =
+                        std::numeric_limits<double>::quiet_NaN();
+                    double history_lag =
+                        std::numeric_limits<double>::quiet_NaN();
+                    double pending_direction = 0.0;
+                    double current_direction = 0.0;
+                    const bool sequence_consistent =
+                        isPendingLoopSequenceConsistent(
+                            *pending_loop_candidate_,
+                            accepted_candidate,
+                            current_progress,
+                            history_progress,
+                            history_lag,
+                            pending_direction,
+                            current_direction
+                        );
+                    const bool pending_expired =
+                        loop_sequence_max_anchor_progress_m_ > 0.0 &&
+                        std::isfinite(current_progress) &&
+                        current_progress >
+                            loop_sequence_max_anchor_progress_m_;
+
+                    if (pending_expired || !sequence_consistent) {
+
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "Loop sequence pending_replaced: old=[%u->%u] "
+                            "new=[%u->%u] reason=%s direction=[%+.0f %+.0f] "
+                            "progress=[%.3f %.3f] lag=%.3f/%.3f",
+                            pending_loop_candidate_->current_id,
+                            pending_loop_candidate_->history_id,
+                            accepted_candidate.current_id,
+                            accepted_candidate.history_id,
+                            pending_expired ? "timeout" : "inconsistent",
+                            pending_direction,
+                            current_direction,
+                            current_progress,
+                            history_progress,
+                            history_lag,
+                            loop_sequence_max_history_lag_m_
+                        );
+                        replace_pending("pending_updated");
+                    } else {
+
+                        bool pending_reverified = true;
+                        if (loop_sequence_pending_reverify_enable_) {
+
+                            pending_reverified =
+                                loop_gicp_enable_ &&
+                                loop_gicp_use_submap_ &&
+                                pending_loop_history_submap_;
+                            const auto *pending_current = findKeyFrame(
+                                pending_loop_candidate_->current_id
+                            );
+                            if (!pending_current)
+                                pending_reverified = false;
+
+                            LoopCandidate reverified_candidate =
+                                *pending_loop_candidate_;
+                            if (pending_reverified) {
+
+                                // history复用首次GICP的双向子图，只补齐
+                                // pending current后续到达的关键帧。
+                                pending_reverified =
+                                    verifyLoopCandidateByGicp(
+                                        *pending_current,
+                                        reverified_candidate,
+                                        true,
+                                        pending_loop_history_submap_
+                                    );
+                            }
+
+                            RCLCPP_INFO(
+                                get_logger(),
+                                "Loop sequence pending_reverify_%s: "
+                                "pending=[%u->%u] confirming=[%u->%u] "
+                                "current_progress=%.3f history_progress=%.3f "
+                                "lag=%.3f",
+                                pending_reverified ? "accepted" : "rejected",
+                                pending_loop_candidate_->current_id,
+                                pending_loop_candidate_->history_id,
+                                accepted_candidate.current_id,
+                                accepted_candidate.history_id,
+                                current_progress,
+                                history_progress,
+                                history_lag
+                            );
+                        }
+
+                        if (pending_reverified) {
+
+                            confirms_pending_sequence = true;
+                        } else {
+
+                            replace_pending("pending_updated");
+                        }
+                    }
+                }
+            }
+
+            if (candidate_ready_for_graph &&
+                pgo_node_added && pgo_enable_) {
 
                 // 6. 对已经通过 GICP 的候选再做稀疏化，避免同一片区域
                 // 连续添加大量相似 loop edge。
@@ -1239,6 +1407,27 @@ namespace small_point_lio_pgo {
                     added_loop_edge =
                         addLoopCandidateToPoseGraph(accepted_candidate);
                     if (added_loop_edge) {
+
+                        loop_candidates_.push_back(accepted_candidate);
+                        int &selected_count =
+                            history_selected_counts_[
+                                accepted_candidate.history_id
+                            ];
+                        ++ selected_count;
+                        RCLCPP_INFO(
+                            get_logger(),
+                            "Loop history selected: current=%u history=%u "
+                            "count=%d/%d retrieval_disabled=%d",
+                            accepted_candidate.current_id,
+                            accepted_candidate.history_id,
+                            selected_count,
+                            loop_history_max_current_matches_,
+                            loop_history_max_current_matches_ > 0 &&
+                                selected_count >=
+                                    loop_history_max_current_matches_
+                                ? 1
+                                : 0
+                        );
 
                         has_last_added_loop_edge_ = true;
                         last_added_loop_current_id_ =
@@ -1268,6 +1457,24 @@ namespace small_point_lio_pgo {
                             last_added_loop_history_direction_ =
                                 heading_dot >= 0.0 ? 1.0 : -1.0;
                         }
+                        if (confirms_pending_sequence) {
+
+                            RCLCPP_INFO(
+                                get_logger(),
+                                "Loop sequence sequence_confirmed: "
+                                "pending=[%u->%u] anchor=[%u->%u]",
+                                pending_loop_candidate_
+                                    ? pending_loop_candidate_->current_id
+                                    : 0U,
+                                pending_loop_candidate_
+                                    ? pending_loop_candidate_->history_id
+                                    : 0U,
+                                accepted_candidate.current_id,
+                                accepted_candidate.history_id
+                            );
+                        }
+                        pending_loop_candidate_.reset();
+                        pending_loop_history_submap_.reset();
                     }
                 } else {
 
@@ -1283,6 +1490,11 @@ namespace small_point_lio_pgo {
                         loop_edge_min_travel_gap_
                     );
                 }
+            }
+
+            if (confirms_pending_sequence && !added_loop_edge) {
+
+                replace_pending("pending_updated_after_insert_failure");
             }
         }
 
@@ -2446,7 +2658,7 @@ namespace small_point_lio_pgo {
         const bool bidirectional
     ) const {
 
-        // current 只累积前序帧；history 已有完整轨迹，可围绕锚点双向取帧。
+        // 首次验证的current只取前序帧；延迟复验时可围绕旧current双向取帧。
         auto submap = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
         const int max_frames = std::max(1, loop_gicp_submap_keyframes_);
 
@@ -2550,7 +2762,10 @@ namespace small_point_lio_pgo {
      */
     bool LoopDetectorNode::verifyLoopCandidateByGicp(
         const LoopKeyFrame &current,
-        LoopCandidate &candidate
+        LoopCandidate &candidate,
+        const bool current_submap_bidirectional,
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cached_history_submap,
+        pcl::PointCloud<pcl::PointXYZ>::Ptr *history_submap_used
     ) {
 
         // GICP 验证的目标是把描述子候选变成可用于 PGO 的 SE3 测量：
@@ -2639,8 +2854,13 @@ namespace small_point_lio_pgo {
         pcl::PointCloud<pcl::PointXYZ>::Ptr target_cloud = history->cloud;
         if (loop_gicp_use_submap_) {
 
-            source_cloud = buildLoopGicpSubmap(current, false);
-            target_cloud = buildLoopGicpSubmap(*history, true);
+            source_cloud = buildLoopGicpSubmap(
+                current,
+                current_submap_bidirectional
+            );
+            target_cloud = cached_history_submap
+                ? std::move(cached_history_submap)
+                : buildLoopGicpSubmap(*history, true);
             if (!source_cloud || source_cloud->empty() ||
                 !target_cloud || target_cloud->empty()) {
 
@@ -2655,6 +2875,8 @@ namespace small_point_lio_pgo {
                 return false;
             }
         }
+        if (history_submap_used)
+            *history_submap_used = target_cloud;
 
         // 这里的 gicp 主要是对齐两个直接从 lidar 上获取的点云（一个是 history 一个是 current）
         const Eigen::Matrix4d init_guess = lidar_history_from_current.matrix();
@@ -2757,6 +2979,15 @@ namespace small_point_lio_pgo {
                 "iris-cart-",
                 make_lateral_delta_init(init_iris_neg, -cart_lat)
             });
+        }
+
+        if (current_submap_bidirectional &&
+            candidate.gicp_verified &&
+            candidate.source_to_target.allFinite()) {
+
+            // 延迟复验只沿用第一次GICP结果作为初值，避免再次遍历多初值。
+            init_guesses.clear();
+            init_guesses.push_back({"pending", candidate.source_to_target});
         }
 
         std::vector<GicpTrial> trials;
@@ -3284,22 +3515,6 @@ namespace small_point_lio_pgo {
         const double current_progress =
             current.travel_distance -
             last_added_loop_current_travel_distance_;
-        if (loop_sequence_max_anchor_progress_m_ > 0.0 &&
-            current_progress > loop_sequence_max_anchor_progress_m_) {
-
-            RCLCPP_INFO(
-                get_logger(),
-                "Loop sequence gate bypassed: stale_anchor=[%u->%u] "
-                "candidate=[%u->%u] current_progress=%.3f/%.3f",
-                last_added_loop_current_id_,
-                last_added_loop_history_id_,
-                current.id,
-                candidate.history_id,
-                current_progress,
-                loop_sequence_max_anchor_progress_m_
-            );
-            return true;
-        }
 
         const auto *history = findKeyFrame(candidate.history_id);
         if (!history)
@@ -3333,6 +3548,76 @@ namespace small_point_lio_pgo {
             accepted ? 1 : 0
         );
         return accepted;
+    }
+
+    bool LoopDetectorNode::isPendingLoopSequenceConsistent(
+        const LoopCandidate &pending,
+        const LoopCandidate &current,
+        double &current_progress,
+        double &history_progress,
+        double &history_lag,
+        double &pending_direction,
+        double &current_direction
+    ) const {
+
+        current_progress = std::numeric_limits<double>::quiet_NaN();
+        history_progress = std::numeric_limits<double>::quiet_NaN();
+        history_lag = std::numeric_limits<double>::quiet_NaN();
+        pending_direction = 0.0;
+        current_direction = 0.0;
+        if (current.current_id <= pending.current_id)
+            return false;
+
+        const auto *pending_current = findKeyFrame(pending.current_id);
+        const auto *pending_history = findKeyFrame(pending.history_id);
+        const auto *current_current = findKeyFrame(current.current_id);
+        const auto *current_history = findKeyFrame(current.history_id);
+        if (!pending_current || !pending_history ||
+            !current_current || !current_history)
+            return false;
+
+        const Eigen::Isometry3d T_world_pending_current =
+            poseToIsometry(pending_current->pose);
+        const Eigen::Isometry3d T_world_pending_history =
+            poseToIsometry(pending_history->pose);
+        const Eigen::Isometry3d T_world_current_current =
+            poseToIsometry(current_current->pose);
+        const Eigen::Isometry3d T_world_current_history =
+            poseToIsometry(current_history->pose);
+        if (!T_world_pending_current.matrix().allFinite() ||
+            !T_world_pending_history.matrix().allFinite() ||
+            !T_world_current_current.matrix().allFinite() ||
+            !T_world_current_history.matrix().allFinite())
+            return false;
+
+        const double pending_heading_dot =
+            T_world_pending_current.linear().col(0).dot(
+                T_world_pending_history.linear().col(0));
+        const double current_heading_dot =
+            T_world_current_current.linear().col(0).dot(
+                T_world_current_history.linear().col(0));
+        if (!std::isfinite(pending_heading_dot) ||
+            !std::isfinite(current_heading_dot))
+            return false;
+
+        pending_direction = pending_heading_dot >= 0.0 ? 1.0 : -1.0;
+        current_direction = current_heading_dot >= 0.0 ? 1.0 : -1.0;
+        current_progress =
+            current_current->travel_distance -
+            pending_current->travel_distance;
+        history_progress =
+            pending_direction *
+            (current_history->travel_distance -
+             pending_history->travel_distance);
+        history_lag = current_progress - history_progress;
+
+        return pending_direction == current_direction &&
+            std::isfinite(current_progress) &&
+            current_progress > 0.0 &&
+            std::isfinite(history_progress) &&
+            history_progress > 0.0 &&
+            std::isfinite(history_lag) &&
+            std::abs(history_lag) <= loop_sequence_max_history_lag_m_;
     }
 
     bool LoopDetectorNode::addLoopCandidateToPoseGraph(
