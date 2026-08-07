@@ -96,7 +96,7 @@ small_point_lio_pgo_loop_detector:
     loop_gicp_min_inliers: 100
     loop_gicp_min_inlier_ratio: 0.50
     loop_gicp_max_registration_error: 20000.0
-    pgo_enable: true
+    pgo_enable: false
     pgo_optimize_on_loop: true
     pgo_max_iterations: 20
     pgo_odom_edge_weight: 150.0
