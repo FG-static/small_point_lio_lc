@@ -30,6 +30,26 @@ ament_target_dependencies(terrain_mapping_node
   sensor_msgs
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(terrain_mapping_node_test
+    test/terrain_mapping_node_test.cpp
+    src/terrain_mapping_node.cpp
+  )
+  if(TARGET terrain_mapping_node_test)
+    target_include_directories(terrain_mapping_node_test
+      PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    ament_target_dependencies(terrain_mapping_node_test
+      rclcpp
+      nav_msgs
+      sensor_msgs
+    )
+  endif()
+endif()
+
 install(TARGETS
   terrain_mapping_node
   DESTINATION lib/${PROJECT_NAME}

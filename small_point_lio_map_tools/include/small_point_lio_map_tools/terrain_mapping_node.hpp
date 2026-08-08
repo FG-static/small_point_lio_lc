@@ -19,6 +19,8 @@
 
 namespace small_point_lio_map_tools {
 
+class TerrainMappingTestPeer;
+
 // 与点云时间对应的轻量里程计样本。
 struct OdomSample {
     std::int64_t stamp_ns{0};
@@ -62,6 +64,7 @@ public:
     TerrainMappingNode();
 
 private:
+    friend class TerrainMappingTestPeer;
     using CloudMsg = sensor_msgs::msg::PointCloud2;
     using OdomMsg = nav_msgs::msg::Odometry;
 
