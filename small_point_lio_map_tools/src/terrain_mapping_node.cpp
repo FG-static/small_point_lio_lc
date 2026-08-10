@@ -55,12 +55,15 @@ TerrainMappingNode::TerrainMappingNode()
     RCLCPP_INFO(
         get_logger(),
         "Ground support: base_height=%.3f seed_radius=%.2f "
-        "seed_tolerance=%.2f max_slope=%.1f max_step=%.2f",
+        "seed_tolerance=%.2f max_slope=%.1f max_step=%.2f "
+        "update_rate=%.1fHz hold=%.2fs",
         base_to_ground_height_,
         seed_radius_,
         seed_height_tolerance_,
         propagation_max_slope_deg_,
-        max_ground_step_);
+        max_ground_step_,
+        ground_update_rate_hz_,
+        ground_support_hold_time_sec_);
 }
 
 void TerrainMappingNode::loadParams() {
@@ -129,6 +132,12 @@ void TerrainMappingNode::loadParams() {
     max_ground_step_ = declare_parameter<double>(
         "max_ground_step",
         max_ground_step_);
+    ground_update_rate_hz_ = declare_parameter<double>(
+        "ground_update_rate_hz",
+        ground_update_rate_hz_);
+    ground_support_hold_time_sec_ = declare_parameter<double>(
+        "ground_support_hold_time_sec",
+        ground_support_hold_time_sec_);
     publish_filtered_cloud_ = declare_parameter<bool>(
         "publish_filtered_cloud",
         publish_filtered_cloud_);
@@ -229,6 +238,28 @@ void TerrainMappingNode::loadParams() {
             "max_ground_step must be positive; using 0.10 m");
         max_ground_step_ = 0.10;
     }
+    if (!std::isfinite(ground_update_rate_hz_) ||
+        ground_update_rate_hz_ <= 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "ground_update_rate_hz must be positive; using 10.0 Hz");
+        ground_update_rate_hz_ = 10.0;
+    }
+    if (!std::isfinite(ground_support_hold_time_sec_) ||
+        ground_support_hold_time_sec_ < 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "ground_support_hold_time_sec must not be negative; using 0.50 s");
+        ground_support_hold_time_sec_ = 0.50;
+    }
+    ground_update_period_ns_ = std::max<std::int64_t>(
+        1LL,
+        static_cast<std::int64_t>(std::llround(
+            1.0e9 / ground_update_rate_hz_)));
+    ground_support_hold_time_ns_ = std::max<std::int64_t>(
+        0LL,
+        static_cast<std::int64_t>(std::llround(
+            ground_support_hold_time_sec_ * 1.0e9)));
 
     if (cloud_topic_.empty()) cloud_topic_ = "/cloud_registered";
     if (odom_topic_.empty()) odom_topic_ = "/Odometry";
@@ -312,11 +343,16 @@ void TerrainMappingNode::onCloud(const CloudMsg::ConstSharedPtr msg) {
     }
 
     std::vector<TerrainPoint> filtered_points;
-    if (!processSynchronizedCloud(*msg, matched_odom, filtered_points)) {
+    bool ground_support_updated = false;
+    if (!processSynchronizedCloud(
+            *msg,
+            matched_odom,
+            filtered_points,
+            &ground_support_updated)) {
         return;
     }
 
-    publishDebugOutputs(*msg, filtered_points);
+    publishDebugOutputs(*msg, filtered_points, ground_support_updated);
 
     RCLCPP_DEBUG(
         get_logger(),
@@ -402,10 +438,13 @@ void TerrainMappingNode::onOdom(const OdomMsg::ConstSharedPtr msg) {
 bool TerrainMappingNode::processSynchronizedCloud(
     const CloudMsg &cloud,
     const OdomSample &matched_odom,
-    std::vector<TerrainPoint> &filtered_points
+    std::vector<TerrainPoint> &filtered_points,
+    bool *ground_support_updated
 ) {
 
     filtered_points.clear();
+    if (ground_support_updated)
+        *ground_support_updated = false;
     const std::size_t input_point_count =
         static_cast<std::size_t>(cloud.width) *
         static_cast<std::size_t>(cloud.height);
@@ -466,30 +505,59 @@ bool TerrainMappingNode::processSynchronizedCloud(
             filtered_points.push_back(point);
         }
 
-        // 开始地面传播
-        std::size_t seed_count = 0U;
-        std::size_t support_count = 0U;
-        TerrainPoint expected_ground;
-        updateGroundSupportLocked(
-            matched_odom,
-            seed_count,
-            support_count,
-            expected_ground);
-        if (base_to_ground_height_ > 0.0) {
-            if (seed_count == 0U) {
-                RCLCPP_WARN_THROTTLE(
-                    get_logger(), *get_clock(), 2000,
-                    "No ground seed near expected point [%.2f %.2f %.2f]",
-                    expected_ground.x,
-                    expected_ground.y,
-                    expected_ground.z);
-            } else {
-                RCLCPP_INFO_THROTTLE(
-                    get_logger(), *get_clock(), 2000,
-                    "Ground support: expected_z=%.3f seeds=%zu connected=%zu",
-                    expected_ground.z,
-                    seed_count,
-                    support_count);
+        // 检查是否需要更新地面支撑（时间回退或达到更新周期）
+        const bool time_moved_backwards =
+            last_ground_update_stamp_ns_ >= 0 &&
+            matched_odom.stamp_ns < last_ground_update_stamp_ns_;
+        const bool update_due =
+            last_ground_update_stamp_ns_ < 0 ||
+            time_moved_backwards ||
+            matched_odom.stamp_ns - last_ground_update_stamp_ns_ >=
+                ground_update_period_ns_;
+        if (update_due) {
+
+            last_ground_update_stamp_ns_ = matched_odom.stamp_ns;
+            if (ground_support_updated)
+                *ground_support_updated = true;
+
+            std::size_t seed_count = 0U;
+            std::size_t support_count = 0U;
+            TerrainPoint expected_ground;
+            updateGroundSupportLocked(
+                matched_odom,
+                seed_count,
+                support_count,
+                expected_ground);
+            const std::size_t active_support_count =
+                static_cast<std::size_t>(std::count_if(
+                    terrain_grid_.cbegin(),
+                    terrain_grid_.cend(),
+                    [](const TerrainCell &cell) {
+                        return cell.support_valid;
+                    }));
+            if (base_to_ground_height_ > 0.0) {
+
+                if (seed_count == 0U) {
+
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(), *get_clock(), 2000,
+                        "No ground seed near expected point [%.2f %.2f %.2f]; "
+                        "holding=%zu",
+                        expected_ground.x,
+                        expected_ground.y,
+                        expected_ground.z,
+                        active_support_count);
+                } else {
+
+                    RCLCPP_INFO_THROTTLE(
+                        get_logger(), *get_clock(), 2000,
+                        "Ground support: expected_z=%.3f seeds=%zu "
+                        "connected=%zu active=%zu",
+                        expected_ground.z,
+                        seed_count,
+                        support_count,
+                        active_support_count);
+                }
             }
         }
     } catch (const std::exception & error) {
@@ -527,6 +595,7 @@ void TerrainMappingNode::initializeTerrainGridLocked(
     terrain_origin_y_ = center_y -
         0.5 * static_cast<double>(terrain_grid_height_cells_) * resolution_;
     terrain_grid_initialized_ = true;
+    last_ground_update_stamp_ns_ = -1;
 }
 
 void TerrainMappingNode::resetTerrainGrid() {
@@ -538,6 +607,7 @@ void TerrainMappingNode::resetTerrainGrid() {
     terrain_origin_x_ = 0.0;
     terrain_origin_y_ = 0.0;
     terrain_grid_initialized_ = false;
+    last_ground_update_stamp_ns_ = -1;
 }
 
 void TerrainMappingNode::recenterTerrainGridLocked(
@@ -769,9 +839,20 @@ void TerrainMappingNode::updateGroundSupportLocked(
     support_count = 0U;
     for (auto &cell : terrain_grid_) {
 
-        cell.support_valid = false;
         cell.support_seed = false;
-        cell.support_z = std::numeric_limits<float>::quiet_NaN();
+        if (!cell.support_valid)
+            continue;
+
+        const bool invalid_stamp = cell.support_update_stamp_ns < 0 ||
+            odom.stamp_ns < cell.support_update_stamp_ns;
+        const bool expired = !invalid_stamp &&
+            odom.stamp_ns - cell.support_update_stamp_ns >
+                ground_support_hold_time_ns_;
+        if (invalid_stamp || expired) {
+            cell.support_valid = false;
+            cell.support_z = std::numeric_limits<float>::quiet_NaN();
+            cell.support_update_stamp_ns = -1;
+        }
     }
 
     if (!computeExpectedGroundPoint(odom, expected_ground)) // 扩展失败
@@ -836,14 +917,24 @@ void TerrainMappingNode::updateGroundSupportLocked(
     if (accepted_seeds.size() < seed_min_cells_)
         return;
 
-    // 初始化种子队列
+    // 初始化支撑面刷新状态
+    std::vector<std::uint8_t> refreshed_support(
+        terrain_grid_.size(),
+        std::uint8_t{0U});
+    std::vector<std::uint8_t> refreshed_seed(
+        terrain_grid_.size(),
+        std::uint8_t{0U});
+    std::vector<float> refreshed_z(
+        terrain_grid_.size(),
+        std::numeric_limits<float>::quiet_NaN());
+
+    // 初始化本轮传播队列，旧支撑面只负责显示保持，不参与本轮扩展。
     std::deque<std::size_t> queue;
     for (const auto &seed : accepted_seeds) {
 
-        auto &cell = terrain_grid_[seed.index];
-        cell.support_valid = true;
-        cell.support_seed = true;
-        cell.support_z = seed.z;
+        refreshed_support[seed.index] = 1U;
+        refreshed_seed[seed.index] = 1U;
+        refreshed_z[seed.index] = seed.z;
         queue.push_back(seed.index);
     }
     seed_count = accepted_seeds.size();
@@ -867,7 +958,7 @@ void TerrainMappingNode::updateGroundSupportLocked(
             current_index % terrain_grid_width_cells_;
         const std::size_t current_y =
             current_index / terrain_grid_width_cells_;
-        const float current_z = terrain_grid_[current_index].support_z;
+        const float current_z = refreshed_z[current_index];
 
         // 遍历邻居偏移量，传播支持
         for (const auto &offset : neighbor_offsets) {
@@ -882,8 +973,8 @@ void TerrainMappingNode::updateGroundSupportLocked(
             const std::size_t next_index =
                 static_cast<std::size_t>(next_y) * terrain_grid_width_cells_ +
                 static_cast<std::size_t>(next_x);
-            auto &next_cell = terrain_grid_[next_index];
-            if (next_cell.support_valid) // 已标记支持点，跳过
+            const auto &next_cell = terrain_grid_[next_index];
+            if (refreshed_support[next_index] != 0U)
                 continue;
 
             const double distance = resolution_ * std::hypot(
@@ -900,18 +991,31 @@ void TerrainMappingNode::updateGroundSupportLocked(
                     selected_z))
                 continue;
 
-            // 标记支持点
-            next_cell.support_valid = true;
-            next_cell.support_z = selected_z;
+            refreshed_support[next_index] = 1U;
+            refreshed_z[next_index] = selected_z;
             ++ support_count;
             queue.push_back(next_index);
         }
+    }
+
+    // 只刷新本轮重新确认的格子；其余旧结果按保持时间自然过期。
+    for (std::size_t index = 0U; index < terrain_grid_.size(); ++ index) {
+
+        if (refreshed_support[index] == 0U)
+            continue;
+
+        auto &cell = terrain_grid_[index];
+        cell.support_valid = true;
+        cell.support_seed = refreshed_seed[index] != 0U;
+        cell.support_z = refreshed_z[index];
+        cell.support_update_stamp_ns = odom.stamp_ns;
     }
 }
 
 void TerrainMappingNode::publishDebugOutputs(
     const CloudMsg &source_cloud,
-    const std::vector<TerrainPoint> &filtered_points
+    const std::vector<TerrainPoint> &filtered_points,
+    bool publish_maps
 ) {
 
     if (publish_filtered_cloud_ && filtered_cloud_publisher_) {
@@ -938,6 +1042,9 @@ void TerrainMappingNode::publishDebugOutputs(
         filtered_cloud.is_dense = true;
         filtered_cloud_publisher_->publish(filtered_cloud);
     }
+
+    if (!publish_maps)
+        return;
 
     // 发布观测地图
     if (publish_observed_map_ && observed_map_publisher_) {

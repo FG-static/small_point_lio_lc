@@ -54,6 +54,7 @@ struct TerrainCell {
     std::array<TerrainZLayer, kTerrainMaxZLayers> z_layers{};
     std::size_t z_layer_count{0U};
     float support_z{std::numeric_limits<float>::quiet_NaN()}; // 有效候选z
+    std::int64_t support_update_stamp_ns{-1}; // 最近一次传播确认时间
 };
 
 struct TerrainPoint {
@@ -86,7 +87,8 @@ private:
     bool processSynchronizedCloud(
         const CloudMsg &cloud,
         const OdomSample &matched_odom,
-        std::vector<TerrainPoint> &filtered_points);
+        std::vector<TerrainPoint> &filtered_points,
+        bool *ground_support_updated = nullptr);
     void initializeTerrainGridLocked(double center_x, double center_y);
     void resetTerrainGrid();
     void recenterTerrainGridLocked(double robot_x, double robot_y);
@@ -111,7 +113,8 @@ private:
         float &selected_z) const;
     void publishDebugOutputs(
         const CloudMsg &source_cloud,
-        const std::vector<TerrainPoint> &filtered_points);
+        const std::vector<TerrainPoint> &filtered_points,
+        bool publish_maps);
 
     rclcpp::Subscription<CloudMsg>::SharedPtr cloud_sub_;
     rclcpp::Subscription<OdomMsg>::SharedPtr odom_sub_;
@@ -150,6 +153,11 @@ private:
     double propagation_max_slope_deg_{25.0};
     double propagation_height_tolerance_{0.02};
     double max_ground_step_{0.10};
+    double ground_update_rate_hz_{10.0};
+    double ground_support_hold_time_sec_{0.50};
+    std::int64_t ground_update_period_ns_{100000000LL};
+    std::int64_t ground_support_hold_time_ns_{500000000LL};
+    std::int64_t last_ground_update_stamp_ns_{-1};
     bool publish_filtered_cloud_{true};
     bool publish_observed_map_{true};
     bool publish_ground_candidate_map_{true};

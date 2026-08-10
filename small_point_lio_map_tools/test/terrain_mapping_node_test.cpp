@@ -23,10 +23,15 @@ public:
         TerrainMappingNode & node,
         const sensor_msgs::msg::PointCloud2 & cloud,
         const OdomSample & odom,
-        std::vector<TerrainPoint> & filtered_points
+        std::vector<TerrainPoint> & filtered_points,
+        bool * ground_support_updated = nullptr
     ) {
 
-        return node.processSynchronizedCloud(cloud, odom, filtered_points);
+        return node.processSynchronizedCloud(
+            cloud,
+            odom,
+            filtered_points,
+            ground_support_updated);
     }
 
     static std::optional<TerrainCell> cellAt(
@@ -74,6 +79,8 @@ public:
         node.propagation_max_slope_deg_ = 25.0;
         node.propagation_height_tolerance_ = 0.02;
         node.max_ground_step_ = 0.10;
+        node.ground_update_period_ns_ = 100000000LL;
+        node.ground_support_hold_time_ns_ = 500000000LL;
     }
 
     static bool gridInitialized(const TerrainMappingNode & node) {
@@ -369,6 +376,84 @@ TEST_F(TerrainMappingNodeTest, KeepsGroundUnknownWithoutRobotSeed) {
     ASSERT_TRUE(cell.has_value());
     EXPECT_TRUE(cell->observed);
     EXPECT_FALSE(cell->support_valid);
+}
+
+TEST_F(TerrainMappingNodeTest, LimitsGroundUpdatesToConfiguredRate) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    const std::vector<TerrainPoint> ground_points{
+        {0.45F, 0.05F, 0.0F},
+        {0.55F, 0.05F, 0.0F},
+        {0.65F, 0.05F, 0.0F},
+        {0.75F, 0.05F, 0.0F},
+    };
+    auto first_odom = makeOdom(0.0, 0.0, 1000000000LL);
+    first_odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+    bool ground_support_updated = false;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(ground_points, first_odom.stamp_ns),
+        first_odom,
+        filtered_points,
+        &ground_support_updated));
+    EXPECT_TRUE(ground_support_updated);
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 4U);
+
+    auto early_odom = makeOdom(3.0, 0.0, 1050000000LL);
+    early_odom.position_z = 0.30;
+    ground_support_updated = true;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({{4.0F, 0.0F, 1.0F}}, early_odom.stamp_ns),
+        early_odom,
+        filtered_points,
+        &ground_support_updated));
+
+    EXPECT_FALSE(ground_support_updated);
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 4U);
+}
+
+TEST_F(TerrainMappingNodeTest, HoldsGroundAcrossBriefSeedFailure) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    const std::vector<TerrainPoint> ground_points{
+        {0.45F, 0.05F, 0.0F},
+        {0.55F, 0.05F, 0.0F},
+        {0.65F, 0.05F, 0.0F},
+        {0.75F, 0.05F, 0.0F},
+    };
+    auto first_odom = makeOdom(0.0, 0.0, 1000000000LL);
+    first_odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(ground_points, first_odom.stamp_ns),
+        first_odom,
+        filtered_points));
+    ASSERT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 4U);
+
+    auto failed_odom = makeOdom(3.0, 0.0, 1100000000LL);
+    failed_odom.position_z = 0.30;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({{4.0F, 0.0F, 1.0F}}, failed_odom.stamp_ns),
+        failed_odom,
+        filtered_points));
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 4U);
+
+    auto expired_odom = makeOdom(3.0, 0.0, 1700000000LL);
+    expired_odom.position_z = 0.30;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({{4.0F, 0.0F, 1.0F}}, expired_odom.stamp_ns),
+        expired_odom,
+        filtered_points));
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 0U);
 }
 
 }  // namespace small_point_lio_map_tools
