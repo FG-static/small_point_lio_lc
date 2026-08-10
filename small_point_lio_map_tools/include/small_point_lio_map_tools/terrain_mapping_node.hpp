@@ -42,15 +42,18 @@ struct TerrainZLayer {
     float max_z{-std::numeric_limits<float>::infinity()};
 };
 
-// 阶段二只维护观测和高度统计，地面/障碍物语义在后续阶段填充。
+// 保存原始高度统计和阶段三得到的连续支撑面候选。
 struct TerrainCell {
     bool observed{false};
+    bool support_valid{false}; // 可以被其他 cell 通过连续 z 传播过来
+    bool support_seed{false}; // 作为种子传播
     std::uint32_t point_count{0U};
     float min_z{std::numeric_limits<float>::infinity()};
     float max_z{-std::numeric_limits<float>::infinity()};
     double z_sum{0.0};
     std::array<TerrainZLayer, kTerrainMaxZLayers> z_layers{};
     std::size_t z_layer_count{0U};
+    float support_z{std::numeric_limits<float>::quiet_NaN()}; // 有效候选z
 };
 
 struct TerrainPoint {
@@ -93,6 +96,19 @@ private:
         std::size_t &cell_index) const;
     void insertTerrainPointLocked(const TerrainPoint &point);
     void updateZLayersLocked(TerrainCell &cell, float z);
+    bool computeExpectedGroundPoint(
+        const OdomSample &odom,
+        TerrainPoint &expected_ground) const;
+    void updateGroundSupportLocked(
+        const OdomSample &odom,
+        std::size_t &seed_count,
+        std::size_t &support_count,
+        TerrainPoint &expected_ground);
+    bool selectLayerNearHeight(
+        const TerrainCell &cell,
+        float reference_z,
+        float max_height_difference,
+        float &selected_z) const;
     void publishDebugOutputs(
         const CloudMsg &source_cloud,
         const std::vector<TerrainPoint> &filtered_points);
@@ -102,6 +118,8 @@ private:
     rclcpp::Publisher<CloudMsg>::SharedPtr filtered_cloud_publisher_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr
         observed_map_publisher_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr
+        ground_candidate_map_publisher_;
 
     mutable std::mutex odom_mutex_;
     std::deque<OdomSample> odom_buffer_;
@@ -124,8 +142,17 @@ private:
     double self_filter_radius_{0.30};
     double min_point_range_{0.30};
     double z_layer_merge_threshold_{0.10};
+    double base_to_ground_height_{0.0};
+    double seed_radius_{0.80};
+    double seed_height_tolerance_{0.15};
+    std::size_t seed_min_cells_{3U};
+    std::size_t ground_layer_min_points_{2U};
+    double propagation_max_slope_deg_{25.0};
+    double propagation_height_tolerance_{0.02};
+    double max_ground_step_{0.10};
     bool publish_filtered_cloud_{true};
     bool publish_observed_map_{true};
+    bool publish_ground_candidate_map_{true};
 
     std::string cloud_topic_{"/cloud_registered"};
     std::string odom_topic_{"/Odometry"};

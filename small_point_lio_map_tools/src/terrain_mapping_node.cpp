@@ -33,6 +33,10 @@ TerrainMappingNode::TerrainMappingNode()
     observed_map_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
         "/terrain/observed_map",
         rclcpp::QoS(1).reliable().transient_local());
+    ground_candidate_map_publisher_ =
+        create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "/terrain/ground_candidate_map",
+            rclcpp::QoS(1).reliable().transient_local());
 
     RCLCPP_INFO(
         get_logger(),
@@ -48,6 +52,15 @@ TerrainMappingNode::TerrainMappingNode()
         map_width_,
         map_height_,
         recenter_distance_);
+    RCLCPP_INFO(
+        get_logger(),
+        "Ground support: base_height=%.3f seed_radius=%.2f "
+        "seed_tolerance=%.2f max_slope=%.1f max_step=%.2f",
+        base_to_ground_height_,
+        seed_radius_,
+        seed_height_tolerance_,
+        propagation_max_slope_deg_,
+        max_ground_step_);
 }
 
 void TerrainMappingNode::loadParams() {
@@ -94,12 +107,37 @@ void TerrainMappingNode::loadParams() {
     z_layer_merge_threshold_ = declare_parameter<double>(
         "z_layer_merge_threshold",
         z_layer_merge_threshold_);
+    base_to_ground_height_ = declare_parameter<double>(
+        "base_to_ground_height",
+        base_to_ground_height_);
+    seed_radius_ = declare_parameter<double>("seed_radius", seed_radius_);
+    seed_height_tolerance_ = declare_parameter<double>(
+        "seed_height_tolerance",
+        seed_height_tolerance_);
+    const auto seed_min_cells = declare_parameter<std::int64_t>(
+        "seed_min_cells",
+        static_cast<std::int64_t>(seed_min_cells_));
+    const auto ground_layer_min_points = declare_parameter<std::int64_t>(
+        "ground_layer_min_points",
+        static_cast<std::int64_t>(ground_layer_min_points_));
+    propagation_max_slope_deg_ = declare_parameter<double>(
+        "propagation_max_slope_deg",
+        propagation_max_slope_deg_);
+    propagation_height_tolerance_ = declare_parameter<double>(
+        "propagation_height_tolerance",
+        propagation_height_tolerance_);
+    max_ground_step_ = declare_parameter<double>(
+        "max_ground_step",
+        max_ground_step_);
     publish_filtered_cloud_ = declare_parameter<bool>(
         "publish_filtered_cloud",
         publish_filtered_cloud_);
     publish_observed_map_ = declare_parameter<bool>(
         "publish_observed_map",
         publish_observed_map_);
+    publish_ground_candidate_map_ = declare_parameter<bool>(
+        "publish_ground_candidate_map",
+        publish_ground_candidate_map_);
 
     if (!std::isfinite(resolution_) || resolution_ <= 0.0) {
         RCLCPP_WARN(get_logger(), "resolution must be positive; using 0.10 m");
@@ -138,11 +176,71 @@ void TerrainMappingNode::loadParams() {
             "z_layer_merge_threshold must be positive; using 0.10 m");
         z_layer_merge_threshold_ = 0.10;
     }
+    if (!std::isfinite(base_to_ground_height_) ||
+        base_to_ground_height_ < 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "base_to_ground_height must not be negative; using 0.0 m");
+        base_to_ground_height_ = 0.0;
+    }
+    if (!std::isfinite(seed_radius_) || seed_radius_ <= 0.0) {
+        RCLCPP_WARN(get_logger(), "seed_radius must be positive; using 0.80 m");
+        seed_radius_ = 0.80;
+    }
+    if (!std::isfinite(seed_height_tolerance_) ||
+        seed_height_tolerance_ <= 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "seed_height_tolerance must be positive; using 0.15 m");
+        seed_height_tolerance_ = 0.15;
+    }
+    if (seed_min_cells <= 0) {
+        RCLCPP_WARN(get_logger(), "seed_min_cells must be positive; using 1");
+    }
+    seed_min_cells_ = seed_min_cells > 0
+        ? static_cast<std::size_t>(seed_min_cells)
+        : 1U;
+    if (ground_layer_min_points <= 0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "ground_layer_min_points must be positive; using 1");
+    }
+    ground_layer_min_points_ = ground_layer_min_points > 0
+        ? static_cast<std::size_t>(ground_layer_min_points)
+        : 1U;
+    if (!std::isfinite(propagation_max_slope_deg_) ||
+        propagation_max_slope_deg_ < 0.0 ||
+        propagation_max_slope_deg_ >= 89.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "propagation_max_slope_deg must be in [0, 89); using 25 deg");
+        propagation_max_slope_deg_ = 25.0;
+    }
+    if (!std::isfinite(propagation_height_tolerance_) ||
+        propagation_height_tolerance_ < 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "propagation_height_tolerance must not be negative; using 0.02 m");
+        propagation_height_tolerance_ = 0.02;
+    }
+    if (!std::isfinite(max_ground_step_) || max_ground_step_ <= 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "max_ground_step must be positive; using 0.10 m");
+        max_ground_step_ = 0.10;
+    }
 
     if (cloud_topic_.empty()) cloud_topic_ = "/cloud_registered";
     if (odom_topic_.empty()) odom_topic_ = "/Odometry";
     if (odom_frame_.empty()) odom_frame_ = "odom";
     if (base_frame_.empty()) base_frame_ = "base_link";
+
+    if (base_to_ground_height_ == 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "Ground support propagation is disabled until "
+            "base_to_ground_height is set");
+    }
 }
 
 void TerrainMappingNode::onCloud(const CloudMsg::ConstSharedPtr msg) {
@@ -367,6 +465,33 @@ bool TerrainMappingNode::processSynchronizedCloud(
             insertTerrainPointLocked(point);
             filtered_points.push_back(point);
         }
+
+        // 开始地面传播
+        std::size_t seed_count = 0U;
+        std::size_t support_count = 0U;
+        TerrainPoint expected_ground;
+        updateGroundSupportLocked(
+            matched_odom,
+            seed_count,
+            support_count,
+            expected_ground);
+        if (base_to_ground_height_ > 0.0) {
+            if (seed_count == 0U) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(), *get_clock(), 2000,
+                    "No ground seed near expected point [%.2f %.2f %.2f]",
+                    expected_ground.x,
+                    expected_ground.y,
+                    expected_ground.z);
+            } else {
+                RCLCPP_INFO_THROTTLE(
+                    get_logger(), *get_clock(), 2000,
+                    "Ground support: expected_z=%.3f seeds=%zu connected=%zu",
+                    expected_ground.z,
+                    seed_count,
+                    support_count);
+            }
+        }
     } catch (const std::exception & error) {
 
         RCLCPP_WARN_THROTTLE(
@@ -567,6 +692,223 @@ void TerrainMappingNode::updateZLayersLocked(TerrainCell &cell, float z) {
     layer.max_z = std::max(layer.max_z, z);
 }
 
+/**
+ * @brief 根据里程计计算预期地面点位置。
+ * @param odom 里程计样本。
+ * @param expected_ground 计算得到的地面点位置。
+ * @return 计算成功返回 true，否则返回 false。
+ */
+bool TerrainMappingNode::computeExpectedGroundPoint(
+    const OdomSample &odom,
+    TerrainPoint &expected_ground
+) const {
+
+    if (base_to_ground_height_ <= 0.0)
+        return false;
+
+    const double norm = std::sqrt(
+        odom.orientation_x * odom.orientation_x +
+        odom.orientation_y * odom.orientation_y +
+        odom.orientation_z * odom.orientation_z +
+        odom.orientation_w * odom.orientation_w);
+    if (!std::isfinite(norm) || norm < 1e-9)
+        return false;
+
+    const double x = odom.orientation_x / norm;
+    const double y = odom.orientation_y / norm;
+    const double z = odom.orientation_z / norm;
+    const double w = odom.orientation_w / norm;
+    const double rotation_xz = 2.0 * (x * z + w * y);
+    const double rotation_yz = 2.0 * (y * z - w * x);
+    const double rotation_zz = 1.0 - 2.0 * (x * x + y * y);
+
+    expected_ground.x = static_cast<float>(
+        odom.position_x - base_to_ground_height_ * rotation_xz);
+    expected_ground.y = static_cast<float>(
+        odom.position_y - base_to_ground_height_ * rotation_yz);
+    expected_ground.z = static_cast<float>(
+        odom.position_z - base_to_ground_height_ * rotation_zz);
+    return std::isfinite(expected_ground.x) &&
+        std::isfinite(expected_ground.y) &&
+        std::isfinite(expected_ground.z);
+}
+
+bool TerrainMappingNode::selectLayerNearHeight(
+    const TerrainCell &cell,
+    float reference_z,
+    float max_height_difference,
+    float &selected_z
+) const {
+
+    float best_difference = std::numeric_limits<float>::infinity();
+    bool found = false;
+    for (std::size_t index = 0U; index < cell.z_layer_count; ++ index) {
+
+        const auto &layer = cell.z_layers[index];
+        if (layer.point_count < ground_layer_min_points_)
+            continue;
+
+        const float difference = std::abs(layer.center_z - reference_z);
+        if (difference <= max_height_difference && difference < best_difference) {
+            best_difference = difference;
+            selected_z = layer.center_z;
+            found = true;
+        }
+    }
+    return found;
+}
+
+void TerrainMappingNode::updateGroundSupportLocked(
+    const OdomSample &odom,
+    std::size_t &seed_count,
+    std::size_t &support_count,
+    TerrainPoint &expected_ground
+) {
+
+    seed_count = 0U;
+    support_count = 0U;
+    for (auto &cell : terrain_grid_) {
+
+        cell.support_valid = false;
+        cell.support_seed = false;
+        cell.support_z = std::numeric_limits<float>::quiet_NaN();
+    }
+
+    if (!computeExpectedGroundPoint(odom, expected_ground)) // 扩展失败
+        return;
+
+    struct SeedCandidate {
+        std::size_t index{0U};
+        float z{0.0F};
+    };
+    std::vector<SeedCandidate> candidates;
+    std::vector<float> candidate_heights;
+    for (std::size_t grid_y = 0U;
+         grid_y < terrain_grid_height_cells_;
+         ++ grid_y
+    ) {
+
+        for (std::size_t grid_x = 0U;
+             grid_x < terrain_grid_width_cells_;
+             ++ grid_x
+        ) {
+
+            const double center_x = terrain_origin_x_ +
+                (static_cast<double>(grid_x) + 0.5) * resolution_;
+            const double center_y = terrain_origin_y_ +
+                (static_cast<double>(grid_y) + 0.5) * resolution_;
+            if (std::hypot(
+                    center_x - expected_ground.x,
+                    center_y - expected_ground.y) > seed_radius_)
+                continue;
+
+            const std::size_t index =
+                grid_y * terrain_grid_width_cells_ + grid_x;
+            float selected_z = 0.0F;
+            // 选择最近的高度层作为候选
+            if (!selectLayerNearHeight(
+                    terrain_grid_[index],
+                    expected_ground.z,
+                    static_cast<float>(seed_height_tolerance_),
+                    selected_z))
+                continue;
+
+            // 候选点高度加入列表
+            candidates.push_back({index, selected_z});
+            candidate_heights.push_back(selected_z);
+        }
+    }
+
+    if (candidates.size() < seed_min_cells_)
+        return;
+
+    std::sort(candidate_heights.begin(), candidate_heights.end());
+    const float median_height =
+        candidate_heights[candidate_heights.size() / 2U];
+    // 基于中位数高度筛选候选点
+    std::vector<SeedCandidate> accepted_seeds;
+    accepted_seeds.reserve(candidates.size());
+    for (const auto &candidate : candidates) {
+
+        if (std::abs(candidate.z - median_height) <= seed_height_tolerance_)
+            accepted_seeds.push_back(candidate);
+    }
+    if (accepted_seeds.size() < seed_min_cells_)
+        return;
+
+    // 初始化种子队列
+    std::deque<std::size_t> queue;
+    for (const auto &seed : accepted_seeds) {
+
+        auto &cell = terrain_grid_[seed.index];
+        cell.support_valid = true;
+        cell.support_seed = true;
+        cell.support_z = seed.z;
+        queue.push_back(seed.index);
+    }
+    seed_count = accepted_seeds.size();
+    support_count = seed_count;
+
+    // 定义邻居偏移量和斜率切线
+    constexpr int neighbor_offsets[8][2] = {
+        {-1, -1}, {0, -1}, {1, -1},
+        {-1,  0},          {1,  0},
+        {-1,  1}, {0,  1}, {1,  1}
+    };
+    constexpr double kPi = 3.14159265358979323846;
+    const double slope_tangent = std::tan(
+        propagation_max_slope_deg_ * kPi / 180.0);
+    // 遍历种子队列，传播支持，采用 BFS 算法
+    while (!queue.empty()) {
+
+        const std::size_t current_index = queue.front();
+        queue.pop_front();
+        const std::size_t current_x =
+            current_index % terrain_grid_width_cells_;
+        const std::size_t current_y =
+            current_index / terrain_grid_width_cells_;
+        const float current_z = terrain_grid_[current_index].support_z;
+
+        // 遍历邻居偏移量，传播支持
+        for (const auto &offset : neighbor_offsets) {
+
+            const auto next_x = static_cast<std::int64_t>(current_x) + offset[0];
+            const auto next_y = static_cast<std::int64_t>(current_y) + offset[1];
+            if (next_x < 0 || next_y < 0 ||
+                next_x >= static_cast<std::int64_t>(terrain_grid_width_cells_) ||
+                next_y >= static_cast<std::int64_t>(terrain_grid_height_cells_))
+                continue;
+
+            const std::size_t next_index =
+                static_cast<std::size_t>(next_y) * terrain_grid_width_cells_ +
+                static_cast<std::size_t>(next_x);
+            auto &next_cell = terrain_grid_[next_index];
+            if (next_cell.support_valid) // 已标记支持点，跳过
+                continue;
+
+            const double distance = resolution_ * std::hypot(
+                static_cast<double>(offset[0]),
+                static_cast<double>(offset[1]));
+            const float allowed_difference = static_cast<float>(std::min(
+                max_ground_step_,
+                distance * slope_tangent + propagation_height_tolerance_));
+            float selected_z = 0.0F;
+            if (!selectLayerNearHeight(
+                    next_cell,
+                    current_z,
+                    allowed_difference,
+                    selected_z))
+                continue;
+
+            // 标记支持点
+            next_cell.support_valid = true;
+            next_cell.support_z = selected_z;
+            ++ support_count;
+            queue.push_back(next_index);
+        }
+    }
+}
+
 void TerrainMappingNode::publishDebugOutputs(
     const CloudMsg &source_cloud,
     const std::vector<TerrainPoint> &filtered_points
@@ -597,6 +939,7 @@ void TerrainMappingNode::publishDebugOutputs(
         filtered_cloud_publisher_->publish(filtered_cloud);
     }
 
+    // 发布观测地图
     if (publish_observed_map_ && observed_map_publisher_) {
 
         nav_msgs::msg::OccupancyGrid observed_map;
@@ -625,6 +968,42 @@ void TerrainMappingNode::publishDebugOutputs(
             }
         }
         observed_map_publisher_->publish(observed_map);
+    }
+
+    // 发布地面候选地图
+    if (publish_ground_candidate_map_ && ground_candidate_map_publisher_) {
+
+        nav_msgs::msg::OccupancyGrid ground_candidate_map;
+        {
+            std::lock_guard<std::mutex> lock(terrain_mutex_);
+            if (!terrain_grid_initialized_)
+                return;
+
+            ground_candidate_map.header = source_cloud.header;
+            ground_candidate_map.header.frame_id = odom_frame_;
+            ground_candidate_map.info.resolution =
+                static_cast<float>(resolution_);
+            ground_candidate_map.info.width = static_cast<std::uint32_t>(
+                terrain_grid_width_cells_);
+            ground_candidate_map.info.height = static_cast<std::uint32_t>(
+                terrain_grid_height_cells_);
+            ground_candidate_map.info.origin.position.x = terrain_origin_x_;
+            ground_candidate_map.info.origin.position.y = terrain_origin_y_;
+            ground_candidate_map.info.origin.orientation.w = 1.0;
+            ground_candidate_map.data.assign(
+                terrain_grid_.size(),
+                static_cast<std::int8_t>(-1));
+            for (std::size_t index = 0U;
+                 index < terrain_grid_.size();
+                 ++ index) {
+
+                if (terrain_grid_[index].support_seed)
+                    ground_candidate_map.data[index] = 100;
+                else if (terrain_grid_[index].support_valid)
+                    ground_candidate_map.data[index] = 0;
+            }
+        }
+        ground_candidate_map_publisher_->publish(ground_candidate_map);
     }
 }
 

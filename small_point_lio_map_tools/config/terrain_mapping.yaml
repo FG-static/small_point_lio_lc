@@ -1,0 +1,37 @@
+terrain_mapping_node:
+  ros__parameters:
+    # 输入话题和坐标系。
+    cloud_topic: "/cloud_registered"
+    odom_topic: "/Odometry"
+    odom_frame: "odom"
+    base_frame: "base_link"
+    max_odom_buffer_size: 200
+    max_sync_delay_ns: 50000000
+
+    # 局部滚动栅格。
+    resolution: 0.10
+    map_width: 20.0
+    map_height: 20.0
+    recenter_distance: 2.0
+
+    # 点云过滤和 Z 层统计。
+    self_filter_radius: 0.30
+    min_point_range: 0.30
+    z_layer_merge_threshold: 0.10
+
+    # 地面种子和支撑面传播。
+    # 必须替换为 base_link 原点沿底盘负 Z 方向到地面的实测距离。
+    # 保持为 0.0 时，节点会安全禁用地面传播。
+    base_to_ground_height: 0.05
+    seed_radius: 1.50
+    seed_height_tolerance: 0.15
+    seed_min_cells: 2
+    ground_layer_min_points: 1
+    propagation_max_slope_deg: 25.0
+    propagation_height_tolerance: 0.02
+    max_ground_step: 0.10
+
+    # 当前阶段的调试输出。
+    publish_filtered_cloud: true
+    publish_observed_map: true
+    publish_ground_candidate_map: true

@@ -9,6 +9,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     package_share = FindPackageShare("small_point_lio_pgo")
+    terrain_package_share = FindPackageShare("small_point_lio_map_tools")
     bridge_config = PathJoinSubstitution(
         [package_share, "config", "bridge.yaml"]
     )
@@ -21,11 +22,15 @@ def generate_launch_description():
     local_feedback_config = PathJoinSubstitution(
         [package_share, "config", "local_map_feedback.yaml"]
     )
+    default_terrain_config = PathJoinSubstitution(
+        [terrain_package_share, "config", "terrain_mapping.yaml"]
+    )
     use_sim_time = LaunchConfiguration("use_sim_time")
     enable_local_map_feedback = LaunchConfiguration(
         "enable_local_map_feedback"
     )
     enable_terrain_mapping = LaunchConfiguration("enable_terrain_mapping")
+    terrain_config = LaunchConfiguration("terrain_config")
     clock_parameter = {
         "use_sim_time": ParameterValue(use_sim_time, value_type=bool)
     }
@@ -49,6 +54,11 @@ def generate_launch_description():
                 "enable_terrain_mapping",
                 default_value="false",
                 description="Run the local rolling terrain mapping node.",
+            ),
+            DeclareLaunchArgument(
+                "terrain_config",
+                default_value=default_terrain_config,
+                description="Terrain mapping parameter file.",
             ),
             Node(
                 package="small_point_lio_pgo",
@@ -85,7 +95,7 @@ def generate_launch_description():
                 name="terrain_mapping_node",
                 output="screen",
                 condition=IfCondition(enable_terrain_mapping),
-                parameters=[clock_parameter],
+                parameters=[terrain_config, clock_parameter],
             ),
         ]
     )

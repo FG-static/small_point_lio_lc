@@ -53,6 +53,29 @@ public:
             }));
     }
 
+    static std::size_t supportCellCount(TerrainMappingNode & node) {
+
+        std::lock_guard<std::mutex> lock(node.terrain_mutex_);
+        return static_cast<std::size_t>(std::count_if(
+            node.terrain_grid_.cbegin(),
+            node.terrain_grid_.cend(),
+            [](const TerrainCell & cell) {
+                return cell.support_valid;
+            }));
+    }
+
+    static void configureGroundSupport(TerrainMappingNode & node) {
+
+        node.base_to_ground_height_ = 0.30;
+        node.seed_radius_ = 0.80;
+        node.seed_height_tolerance_ = 0.15;
+        node.seed_min_cells_ = 3U;
+        node.ground_layer_min_points_ = 1U;
+        node.propagation_max_slope_deg_ = 25.0;
+        node.propagation_height_tolerance_ = 0.02;
+        node.max_ground_step_ = 0.10;
+    }
+
     static bool gridInitialized(const TerrainMappingNode & node) {
 
         std::lock_guard<std::mutex> lock(node.terrain_mutex_);
@@ -240,6 +263,112 @@ TEST_F(TerrainMappingNodeTest, TimeResetClearsTerrainMap) {
     TerrainMappingTestPeer::onOdom(*node, 1);
     EXPECT_FALSE(TerrainMappingTestPeer::gridInitialized(*node));
     EXPECT_EQ(TerrainMappingTestPeer::observedCellCount(*node), 0U);
+}
+
+// 测试从机器人种子传播平坦地面
+TEST_F(TerrainMappingNodeTest, PropagatesFlatGroundFromRobotSeeds) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    const std::vector<TerrainPoint> points{
+        {0.45F, 0.05F, 0.0F},
+        {0.55F, 0.05F, 0.0F},
+        {0.65F, 0.05F, 0.0F},
+        {0.75F, 0.05F, 0.0F},
+        {0.85F, 0.05F, 0.0F},
+        {0.95F, 0.05F, 0.0F},
+        {1.05F, 0.05F, 0.0F},
+        {1.15F, 0.05F, 0.0F},
+    };
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node, makeCloud(points), odom, filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), points.size());
+    const auto last_cell = TerrainMappingTestPeer::cellAt(*node, 1.15, 0.05);
+    ASSERT_TRUE(last_cell.has_value());
+    EXPECT_TRUE(last_cell->support_valid);
+    EXPECT_FALSE(last_cell->support_seed);
+    EXPECT_NEAR(last_cell->support_z, 0.0F, 1e-6F);
+}
+
+// 测试传播 gentle slope
+TEST_F(TerrainMappingNodeTest, PropagatesGentleSlope) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    constexpr float kSlopeTangent = 0.176327F;
+    std::vector<TerrainPoint> points;
+    for (int index = 0; index < 9; ++ index) {
+
+        const float x = 0.45F + 0.10F * static_cast<float>(index);
+        points.push_back({x, 0.05F, (x - 0.45F) * kSlopeTangent});
+    }
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node, makeCloud(points), odom, filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), points.size());
+    const auto last_cell = TerrainMappingTestPeer::cellAt(*node, 1.25, 0.05);
+    ASSERT_TRUE(last_cell.has_value());
+    EXPECT_TRUE(last_cell->support_valid);
+    EXPECT_NEAR(last_cell->support_z, 0.80F * kSlopeTangent, 1e-5F);
+}
+
+// 测试拒绝断开的盒子顶部
+TEST_F(TerrainMappingNodeTest, RejectsDisconnectedBoxTop) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    const std::vector<TerrainPoint> points{
+        {0.45F, 0.05F, 0.0F},
+        {0.55F, 0.05F, 0.0F},
+        {0.65F, 0.05F, 0.0F},
+        {0.75F, 0.05F, 0.0F},
+        {0.85F, 0.05F, 0.30F},
+        {0.95F, 0.05F, 0.30F},
+        {1.05F, 0.05F, 0.30F},
+    };
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node, makeCloud(points), odom, filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 4U);
+    const auto box_cell = TerrainMappingTestPeer::cellAt(*node, 0.85, 0.05);
+    ASSERT_TRUE(box_cell.has_value());
+    EXPECT_TRUE(box_cell->observed);
+    EXPECT_FALSE(box_cell->support_valid);
+}
+
+// 测试保持地面未知，没有机器人种子
+TEST_F(TerrainMappingNodeTest, KeepsGroundUnknownWithoutRobotSeed) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({{2.05F, 0.05F, 0.0F}}),
+        odom,
+        filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 0U);
+    const auto cell = TerrainMappingTestPeer::cellAt(*node, 2.05, 0.05);
+    ASSERT_TRUE(cell.has_value());
+    EXPECT_TRUE(cell->observed);
+    EXPECT_FALSE(cell->support_valid);
 }
 
 }  // namespace small_point_lio_map_tools
