@@ -25,6 +25,7 @@ def generate_launch_description():
     enable_local_map_feedback = LaunchConfiguration(
         "enable_local_map_feedback"
     )
+    enable_terrain_mapping = LaunchConfiguration("enable_terrain_mapping")
     clock_parameter = {
         "use_sim_time": ParameterValue(use_sim_time, value_type=bool)
     }
@@ -43,6 +44,11 @@ def generate_launch_description():
                     "Run the fixed-lag local-map feedback node. The Point-LIO "
                     "frontend must also set local_map_feedback_enable:=true."
                 ),
+            ),
+            DeclareLaunchArgument(
+                "enable_terrain_mapping",
+                default_value="false",
+                description="Run the local rolling terrain mapping node.",
             ),
             Node(
                 package="small_point_lio_pgo",
@@ -72,6 +78,14 @@ def generate_launch_description():
                 output="screen",
                 condition=IfCondition(enable_local_map_feedback),
                 parameters=[local_feedback_config, clock_parameter],
+            ),
+            Node(
+                package="small_point_lio_map_tools",
+                executable="terrain_mapping_node",
+                name="terrain_mapping_node",
+                output="screen",
+                condition=IfCondition(enable_terrain_mapping),
+                parameters=[clock_parameter],
             ),
         ]
     )

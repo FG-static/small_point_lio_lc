@@ -294,6 +294,13 @@ void TerrainMappingNode::onOdom(const OdomMsg::ConstSharedPtr msg) {
     }
 }
 
+/**
+ * @brief 处理同步的点云数据，将其转换为地形点并插入到地形栅格中。
+ * @param cloud 点云数据。
+ * @param matched_odom 与点云对应的里程计样本。
+ * @param filtered_points 过滤后的地形点列表。
+ * @return bool 处理成功返回 true，否则返回 false。
+ */
 bool TerrainMappingNode::processSynchronizedCloud(
     const CloudMsg &cloud,
     const OdomSample &matched_odom,
@@ -561,8 +568,8 @@ void TerrainMappingNode::updateZLayersLocked(TerrainCell &cell, float z) {
 }
 
 void TerrainMappingNode::publishDebugOutputs(
-    const CloudMsg & source_cloud,
-    const std::vector<TerrainPoint> & filtered_points
+    const CloudMsg &source_cloud,
+    const std::vector<TerrainPoint> &filtered_points
 ) {
 
     if (publish_filtered_cloud_ && filtered_cloud_publisher_) {

@@ -75,27 +75,27 @@ private:
     void onOdom(const OdomMsg::ConstSharedPtr msg);
     bool findNearestOdom(
         std::int64_t cloud_stamp_ns,
-        OdomSample & matched_odom) const;
+        OdomSample &matched_odom) const;
     void trimOdomBuffer(std::int64_t newest_stamp_ns);
-    std::int64_t stampToNanoseconds(const rclcpp::Time & stamp) const;
+    std::int64_t stampToNanoseconds(const rclcpp::Time &stamp) const;
 
     // 阶段二：局部滚动 XY 栅格和点云处理。
     bool processSynchronizedCloud(
-        const CloudMsg & cloud,
-        const OdomSample & matched_odom,
-        std::vector<TerrainPoint> & filtered_points);
+        const CloudMsg &cloud,
+        const OdomSample &matched_odom,
+        std::vector<TerrainPoint> &filtered_points);
     void initializeTerrainGridLocked(double center_x, double center_y);
     void resetTerrainGrid();
     void recenterTerrainGridLocked(double robot_x, double robot_y);
     bool worldToGridLocked(
         double x,
         double y,
-        std::size_t & cell_index) const;
-    void insertTerrainPointLocked(const TerrainPoint & point);
-    void updateZLayersLocked(TerrainCell & cell, float z);
+        std::size_t &cell_index) const;
+    void insertTerrainPointLocked(const TerrainPoint &point);
+    void updateZLayersLocked(TerrainCell &cell, float z);
     void publishDebugOutputs(
-        const CloudMsg & source_cloud,
-        const std::vector<TerrainPoint> & filtered_points);
+        const CloudMsg &source_cloud,
+        const std::vector<TerrainPoint> &filtered_points);
 
     rclcpp::Subscription<CloudMsg>::SharedPtr cloud_sub_;
     rclcpp::Subscription<OdomMsg>::SharedPtr odom_sub_;
