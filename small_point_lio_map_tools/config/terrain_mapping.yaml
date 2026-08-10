@@ -35,7 +35,14 @@ terrain_mapping_node:
     # 某次传播未刷新时，旧地面结果继续保留的时间。
     ground_support_hold_time_sec: 0.50
 
+    # 固定邻域 PCA 地面拟合。置信度仅是格数与残差构成的质量分数。
+    pca_radius: 0.30
+    pca_min_cells: 8
+    max_plane_residual: 0.05
+
     # 当前阶段的调试输出。
     publish_filtered_cloud: true
     publish_observed_map: true
     publish_ground_candidate_map: true
+    publish_ground_cloud: true
+    publish_slope_map: true

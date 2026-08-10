@@ -55,6 +55,17 @@ struct TerrainCell {
     std::size_t z_layer_count{0U};
     float support_z{std::numeric_limits<float>::quiet_NaN()}; // 有效候选z
     std::int64_t support_update_stamp_ns{-1}; // 最近一次传播确认时间
+    bool ground_valid{false};
+    float ground_z{std::numeric_limits<float>::quiet_NaN()}; // 地面高度
+    // 地面法向量
+    float ground_normal_x{std::numeric_limits<float>::quiet_NaN()};
+    float ground_normal_y{std::numeric_limits<float>::quiet_NaN()};
+    float ground_normal_z{std::numeric_limits<float>::quiet_NaN()};
+    // 地面坡度角度
+    float slope_deg{std::numeric_limits<float>::quiet_NaN()};
+    float plane_residual{std::numeric_limits<float>::quiet_NaN()};
+    // 只是由邻域格数和拟合残差构成的质量分数，不是概率。
+    float ground_confidence{0.0F};
 };
 
 struct TerrainPoint {
@@ -106,6 +117,8 @@ private:
         std::size_t &seed_count,
         std::size_t &support_count,
         TerrainPoint &expected_ground);
+    std::size_t updateGroundFitsLocked();
+    bool fitGroundPlaneAtCellLocked(std::size_t cell_index);
     bool selectLayerNearHeight(
         const TerrainCell &cell,
         float reference_z,
@@ -123,6 +136,9 @@ private:
         observed_map_publisher_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr
         ground_candidate_map_publisher_;
+    rclcpp::Publisher<CloudMsg>::SharedPtr ground_cloud_publisher_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr
+        slope_map_publisher_;
 
     mutable std::mutex odom_mutex_;
     std::deque<OdomSample> odom_buffer_;
@@ -155,12 +171,17 @@ private:
     double max_ground_step_{0.10};
     double ground_update_rate_hz_{10.0};
     double ground_support_hold_time_sec_{0.50};
+    double pca_radius_{0.30};
+    std::size_t pca_min_cells_{8U};
+    double max_plane_residual_{0.05};
     std::int64_t ground_update_period_ns_{100000000LL};
     std::int64_t ground_support_hold_time_ns_{500000000LL};
     std::int64_t last_ground_update_stamp_ns_{-1};
     bool publish_filtered_cloud_{true};
     bool publish_observed_map_{true};
     bool publish_ground_candidate_map_{true};
+    bool publish_ground_cloud_{true};
+    bool publish_slope_map_{true};
 
     std::string cloud_topic_{"/cloud_registered"};
     std::string odom_topic_{"/Odometry"};

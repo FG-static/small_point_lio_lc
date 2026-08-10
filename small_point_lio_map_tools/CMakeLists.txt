@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -29,6 +30,7 @@ ament_target_dependencies(terrain_mapping_node
   nav_msgs
   sensor_msgs
 )
+target_link_libraries(terrain_mapping_node Eigen3::Eigen)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -47,6 +49,7 @@ if(BUILD_TESTING)
       nav_msgs
       sensor_msgs
     )
+    target_link_libraries(terrain_mapping_node_test Eigen3::Eigen)
   endif()
 endif()
 

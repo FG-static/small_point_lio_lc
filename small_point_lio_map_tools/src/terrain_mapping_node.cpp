@@ -10,6 +10,9 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/Core>
+#include <Eigen/Eigenvalues>
+
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 
 namespace small_point_lio_map_tools {
@@ -37,6 +40,11 @@ TerrainMappingNode::TerrainMappingNode()
         create_publisher<nav_msgs::msg::OccupancyGrid>(
             "/terrain/ground_candidate_map",
             rclcpp::QoS(1).reliable().transient_local());
+    ground_cloud_publisher_ =
+        create_publisher<CloudMsg>("/terrain/ground_cloud", 10);
+    slope_map_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+        "/terrain/slope_map",
+        rclcpp::QoS(1).reliable().transient_local());
 
     RCLCPP_INFO(
         get_logger(),
@@ -64,6 +72,12 @@ TerrainMappingNode::TerrainMappingNode()
         max_ground_step_,
         ground_update_rate_hz_,
         ground_support_hold_time_sec_);
+    RCLCPP_INFO(
+        get_logger(),
+        "Ground PCA: radius=%.2f min_cells=%zu max_residual=%.3f",
+        pca_radius_,
+        pca_min_cells_,
+        max_plane_residual_);
 }
 
 void TerrainMappingNode::loadParams() {
@@ -138,6 +152,13 @@ void TerrainMappingNode::loadParams() {
     ground_support_hold_time_sec_ = declare_parameter<double>(
         "ground_support_hold_time_sec",
         ground_support_hold_time_sec_);
+    pca_radius_ = declare_parameter<double>("pca_radius", pca_radius_);
+    const auto pca_min_cells = declare_parameter<std::int64_t>(
+        "pca_min_cells",
+        static_cast<std::int64_t>(pca_min_cells_));
+    max_plane_residual_ = declare_parameter<double>(
+        "max_plane_residual",
+        max_plane_residual_);
     publish_filtered_cloud_ = declare_parameter<bool>(
         "publish_filtered_cloud",
         publish_filtered_cloud_);
@@ -147,6 +168,12 @@ void TerrainMappingNode::loadParams() {
     publish_ground_candidate_map_ = declare_parameter<bool>(
         "publish_ground_candidate_map",
         publish_ground_candidate_map_);
+    publish_ground_cloud_ = declare_parameter<bool>(
+        "publish_ground_cloud",
+        publish_ground_cloud_);
+    publish_slope_map_ = declare_parameter<bool>(
+        "publish_slope_map",
+        publish_slope_map_);
 
     if (!std::isfinite(resolution_) || resolution_ <= 0.0) {
         RCLCPP_WARN(get_logger(), "resolution must be positive; using 0.10 m");
@@ -251,6 +278,22 @@ void TerrainMappingNode::loadParams() {
             get_logger(),
             "ground_support_hold_time_sec must not be negative; using 0.50 s");
         ground_support_hold_time_sec_ = 0.50;
+    }
+    if (!std::isfinite(pca_radius_) || pca_radius_ <= 0.0) {
+        RCLCPP_WARN(get_logger(), "pca_radius must be positive; using 0.30 m");
+        pca_radius_ = 0.30;
+    }
+    if (pca_min_cells < 3) {
+        RCLCPP_WARN(get_logger(), "pca_min_cells must be at least 3; using 3");
+    }
+    pca_min_cells_ = pca_min_cells >= 3
+        ? static_cast<std::size_t>(pca_min_cells)
+        : 3U;
+    if (!std::isfinite(max_plane_residual_) || max_plane_residual_ <= 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "max_plane_residual must be positive; using 0.05 m");
+        max_plane_residual_ = 0.05;
     }
     ground_update_period_ns_ = std::max<std::int64_t>(
         1LL,
@@ -528,6 +571,7 @@ bool TerrainMappingNode::processSynchronizedCloud(
                 seed_count,
                 support_count,
                 expected_ground);
+            const std::size_t ground_fit_count = updateGroundFitsLocked();
             const std::size_t active_support_count =
                 static_cast<std::size_t>(std::count_if(
                     terrain_grid_.cbegin(),
@@ -542,21 +586,23 @@ bool TerrainMappingNode::processSynchronizedCloud(
                     RCLCPP_WARN_THROTTLE(
                         get_logger(), *get_clock(), 2000,
                         "No ground seed near expected point [%.2f %.2f %.2f]; "
-                        "holding=%zu",
+                        "holding=%zu fitted=%zu",
                         expected_ground.x,
                         expected_ground.y,
                         expected_ground.z,
-                        active_support_count);
+                        active_support_count,
+                        ground_fit_count);
                 } else {
 
                     RCLCPP_INFO_THROTTLE(
                         get_logger(), *get_clock(), 2000,
                         "Ground support: expected_z=%.3f seeds=%zu "
-                        "connected=%zu active=%zu",
+                        "connected=%zu active=%zu fitted=%zu",
                         expected_ground.z,
                         seed_count,
                         support_count,
-                        active_support_count);
+                        active_support_count,
+                        ground_fit_count);
                 }
             }
         }
@@ -1012,6 +1058,186 @@ void TerrainMappingNode::updateGroundSupportLocked(
     }
 }
 
+std::size_t TerrainMappingNode::updateGroundFitsLocked() {
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (auto &cell : terrain_grid_) {
+
+        cell.ground_valid = false;
+        cell.ground_z = nan;
+        cell.ground_normal_x = nan;
+        cell.ground_normal_y = nan;
+        cell.ground_normal_z = nan;
+        cell.slope_deg = nan;
+        cell.plane_residual = nan;
+        cell.ground_confidence = 0.0F;
+    }
+
+    std::size_t fitted_count = 0U;
+    for (std::size_t index = 0U; index < terrain_grid_.size(); ++ index) {
+
+        // 尝试拟合该单元格的地面平面
+        if (terrain_grid_[index].support_valid &&
+            fitGroundPlaneAtCellLocked(index))
+            ++ fitted_count;
+    }
+    return fitted_count;
+}
+
+/**
+ * @brief 尝试拟合指定单元格的地面平面
+ * @param cell_index 单元格索引
+ * @return 拟合成功返回 true，否则返回 false
+ */
+bool TerrainMappingNode::fitGroundPlaneAtCellLocked(
+    const std::size_t cell_index
+) {
+
+    if (cell_index >= terrain_grid_.size() ||
+        !terrain_grid_[cell_index].support_valid)
+        return false;
+
+    const std::size_t target_x = cell_index % terrain_grid_width_cells_;
+    const std::size_t target_y = cell_index / terrain_grid_width_cells_;
+    const double target_center_x = terrain_origin_x_ +
+        (static_cast<double>(target_x) + 0.5) * resolution_;
+    const double target_center_y = terrain_origin_y_ +
+        (static_cast<double>(target_y) + 0.5) * resolution_;
+    const auto radius_cells = static_cast<std::int64_t>(
+        std::ceil(pca_radius_ / resolution_));
+    const double radius_squared = pca_radius_ * pca_radius_;
+
+    std::vector<Eigen::Vector3d> samples;
+    samples.reserve(static_cast<std::size_t>(
+        (2 * radius_cells + 1) * (2 * radius_cells + 1)));
+    double min_sample_z = std::numeric_limits<double>::infinity();
+    double max_sample_z = -std::numeric_limits<double>::infinity();
+    // 遍历邻域内的所有点
+    for (std::int64_t offset_y = -radius_cells;
+         offset_y <= radius_cells;
+         ++ offset_y
+    ) {
+
+        for (std::int64_t offset_x = -radius_cells;
+             offset_x <= radius_cells;
+             ++ offset_x
+        ) {
+
+            const auto grid_x = static_cast<std::int64_t>(target_x) + offset_x;
+            const auto grid_y = static_cast<std::int64_t>(target_y) + offset_y;
+            if (grid_x < 0 || grid_y < 0 ||
+                grid_x >= static_cast<std::int64_t>(terrain_grid_width_cells_) ||
+                grid_y >= static_cast<std::int64_t>(terrain_grid_height_cells_))
+                continue;
+
+            const double center_x = terrain_origin_x_ +
+                (static_cast<double>(grid_x) + 0.5) * resolution_;
+            const double center_y = terrain_origin_y_ +
+                (static_cast<double>(grid_y) + 0.5) * resolution_;
+            const double dx = center_x - target_center_x;
+            const double dy = center_y - target_center_y;
+            if (dx * dx + dy * dy > radius_squared + 1e-12) {
+
+                // 超出邻域半径的点跳过，这是因为双层 for 表示的是一个方形区域
+                continue;
+            }
+
+            const std::size_t index = static_cast<std::size_t>(grid_y) *
+                terrain_grid_width_cells_ + static_cast<std::size_t>(grid_x);
+            const auto &cell = terrain_grid_[index];
+            // 无效的支持点跳过
+            if (!cell.support_valid || !std::isfinite(cell.support_z))
+                continue;
+
+            samples.emplace_back(center_x, center_y, cell.support_z);
+
+            min_sample_z = std::min(
+                min_sample_z, static_cast<double>(cell.support_z));
+            max_sample_z = std::max(
+                max_sample_z, static_cast<double>(cell.support_z));
+        }
+    }
+    if (samples.size() < pca_min_cells_)
+        return false;
+
+    constexpr double kPi = 3.14159265358979323846;
+    const double max_height_span =
+        2.0 * pca_radius_ * std::tan(propagation_max_slope_deg_ * kPi / 180.0) +
+        2.0 * propagation_height_tolerance_; // 最大高度跨度
+    if (!std::isfinite(min_sample_z) || !std::isfinite(max_sample_z) ||
+        max_sample_z - min_sample_z > max_height_span)
+        return false;
+
+    // 计算质心
+    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+    for (const auto &sample : samples)
+        centroid += sample;
+    centroid /= static_cast<double>(samples.size());
+
+    // 计算协方差矩阵
+    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    for (const auto &sample : samples) {
+
+        const Eigen::Vector3d centered = sample - centroid;
+        covariance.noalias() += centered * centered.transpose();
+    }
+    covariance /= static_cast<double>(samples.size());
+
+    // 计算特征值和特征向量
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+    if (solver.info() != Eigen::Success)
+        return false;
+
+    const Eigen::Vector3d eigenvalues = solver.eigenvalues();
+    if (!eigenvalues.allFinite() || eigenvalues[1] <= 1e-8)
+        return false;
+
+    Eigen::Vector3d normal = solver.eigenvectors().col(0);
+    if (!normal.allFinite())
+        return false;
+    if (normal.z() < 0.0)
+        normal = -normal;
+    if (normal.z() <= 1e-6)
+        return false;
+
+    // 计算残差
+    const double residual = std::sqrt(std::max(0.0, eigenvalues[0]));
+    if (!std::isfinite(residual) || residual > max_plane_residual_)
+        return false;
+
+    // 计算地面高度
+    const double ground_z = centroid.z() -
+        (normal.x() * (target_center_x - centroid.x()) +
+         normal.y() * (target_center_y - centroid.y())) / normal.z();
+    constexpr double kRadiansToDegrees = 180.0 / kPi;
+    // 计算坡度
+    const double slope_deg = std::atan2(
+        std::hypot(normal.x(), normal.y()), normal.z()) * kRadiansToDegrees;
+    if (!std::isfinite(ground_z) || !std::isfinite(slope_deg))
+        return false;
+
+    // 计算支持点数量得分
+    const double count_score = std::min(
+        1.0,
+        static_cast<double>(samples.size()) /
+            (2.0 * static_cast<double>(pca_min_cells_)));
+    const double residual_score = std::max(
+        0.0,
+        1.0 - residual / max_plane_residual_);
+
+    auto &cell = terrain_grid_[cell_index];
+    cell.ground_valid = true;
+    cell.ground_z = static_cast<float>(ground_z);
+    // 存储地面法向量和坡度
+    cell.ground_normal_x = static_cast<float>(normal.x());
+    cell.ground_normal_y = static_cast<float>(normal.y());
+    cell.ground_normal_z = static_cast<float>(normal.z());
+    cell.slope_deg = static_cast<float>(slope_deg);
+    cell.plane_residual = static_cast<float>(residual);
+    cell.ground_confidence = static_cast<float>(count_score * residual_score);
+    return true;
+}
+
 void TerrainMappingNode::publishDebugOutputs(
     const CloudMsg &source_cloud,
     const std::vector<TerrainPoint> &filtered_points,
@@ -1111,6 +1337,91 @@ void TerrainMappingNode::publishDebugOutputs(
             }
         }
         ground_candidate_map_publisher_->publish(ground_candidate_map);
+    }
+
+    // 发布地面点云
+    if (publish_ground_cloud_ && ground_cloud_publisher_) {
+
+        std::vector<TerrainPoint> ground_points;
+        {
+            std::lock_guard<std::mutex> lock(terrain_mutex_);
+            if (!terrain_grid_initialized_)
+                return;
+
+            ground_points.reserve(terrain_grid_.size());
+            for (std::size_t index = 0U; index < terrain_grid_.size(); ++ index) {
+
+                const auto &cell = terrain_grid_[index];
+                if (!cell.ground_valid)
+                    continue;
+
+                const std::size_t grid_x = index % terrain_grid_width_cells_;
+                const std::size_t grid_y = index / terrain_grid_width_cells_;
+                ground_points.push_back({
+                    static_cast<float>(terrain_origin_x_ +
+                        (static_cast<double>(grid_x) + 0.5) * resolution_),
+                    static_cast<float>(terrain_origin_y_ +
+                        (static_cast<double>(grid_y) + 0.5) * resolution_),
+                    cell.ground_z});
+            }
+        }
+
+        CloudMsg ground_cloud;
+        ground_cloud.header = source_cloud.header;
+        ground_cloud.header.frame_id = odom_frame_;
+        sensor_msgs::PointCloud2Modifier modifier(ground_cloud);
+        modifier.setPointCloud2FieldsByString(1, "xyz");
+        modifier.resize(ground_points.size());
+        sensor_msgs::PointCloud2Iterator<float> iter_x(ground_cloud, "x");
+        sensor_msgs::PointCloud2Iterator<float> iter_y(ground_cloud, "y");
+        sensor_msgs::PointCloud2Iterator<float> iter_z(ground_cloud, "z");
+        for (const auto &point : ground_points) {
+
+            *iter_x = point.x;
+            *iter_y = point.y;
+            *iter_z = point.z;
+            ++ iter_x;
+            ++ iter_y;
+            ++ iter_z;
+        }
+        ground_cloud.is_dense = true;
+        ground_cloud_publisher_->publish(ground_cloud);
+    }
+
+    // 调试图直接保存 0~90 度的坡度，暂不映射为 Nav2 代价。
+    if (publish_slope_map_ && slope_map_publisher_) {
+
+        nav_msgs::msg::OccupancyGrid slope_map;
+        {
+            std::lock_guard<std::mutex> lock(terrain_mutex_);
+            if (!terrain_grid_initialized_)
+                return;
+
+            slope_map.header = source_cloud.header;
+            slope_map.header.frame_id = odom_frame_;
+            slope_map.info.resolution = static_cast<float>(resolution_);
+            slope_map.info.width = static_cast<std::uint32_t>(
+                terrain_grid_width_cells_);
+            slope_map.info.height = static_cast<std::uint32_t>(
+                terrain_grid_height_cells_);
+            slope_map.info.origin.position.x = terrain_origin_x_;
+            slope_map.info.origin.position.y = terrain_origin_y_;
+            slope_map.info.origin.orientation.w = 1.0;
+            slope_map.data.assign(
+                terrain_grid_.size(),
+                static_cast<std::int8_t>(-1));
+            for (std::size_t index = 0U; index < terrain_grid_.size(); ++ index) {
+
+                const auto &cell = terrain_grid_[index];
+                if (!cell.ground_valid)
+                    continue;
+
+                const long rounded_slope = std::lround(cell.slope_deg);
+                slope_map.data[index] = static_cast<std::int8_t>(
+                    std::clamp(rounded_slope, 0L, 90L));
+            }
+        }
+        slope_map_publisher_->publish(slope_map);
     }
 }
 

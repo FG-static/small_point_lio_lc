@@ -69,6 +69,17 @@ public:
             }));
     }
 
+    static std::size_t groundCellCount(TerrainMappingNode & node) {
+
+        std::lock_guard<std::mutex> lock(node.terrain_mutex_);
+        return static_cast<std::size_t>(std::count_if(
+            node.terrain_grid_.cbegin(),
+            node.terrain_grid_.cend(),
+            [](const TerrainCell & cell) {
+                return cell.ground_valid;
+            }));
+    }
+
     static void configureGroundSupport(TerrainMappingNode & node) {
 
         node.base_to_ground_height_ = 0.30;
@@ -81,6 +92,20 @@ public:
         node.max_ground_step_ = 0.10;
         node.ground_update_period_ns_ = 100000000LL;
         node.ground_support_hold_time_ns_ = 500000000LL;
+        node.pca_radius_ = 0.30;
+        node.pca_min_cells_ = 8U;
+        node.max_plane_residual_ = 0.05;
+    }
+
+    static void configureGroundFit(
+        TerrainMappingNode & node,
+        const double radius,
+        const std::size_t min_cells
+    ) {
+
+        node.pca_radius_ = radius;
+        node.pca_min_cells_ = min_cells;
+        node.max_plane_residual_ = 0.05;
     }
 
     static bool gridInitialized(const TerrainMappingNode & node) {
@@ -162,6 +187,24 @@ OdomSample makeOdom(
     odom.position_z = 0.0;
     odom.orientation_w = 1.0;
     return odom;
+}
+
+std::vector<TerrainPoint> makePlaneGrid(const float slope_tangent) {
+
+    std::vector<TerrainPoint> points;
+    for (int y_index = -4; y_index <= 4; ++ y_index) {
+
+        for (int x_index = 0; x_index < 9; ++ x_index) {
+
+            const float x = 0.45F + 0.10F * static_cast<float>(x_index);
+            const float y = 0.05F + 0.10F * static_cast<float>(y_index);
+            points.push_back({
+                x,
+                y,
+                (x - 0.45F) * slope_tangent});
+        }
+    }
+    return points;
 }
 
 }  // namespace
@@ -454,6 +497,107 @@ TEST_F(TerrainMappingNodeTest, HoldsGroundAcrossBriefSeedFailure) {
         expired_odom,
         filtered_points));
     EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), 0U);
+}
+
+// 测试拟合水平地面平面
+TEST_F(TerrainMappingNodeTest, FitsHorizontalGroundPlane) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(0.0F)),
+        odom,
+        filtered_points));
+
+    EXPECT_GT(TerrainMappingTestPeer::groundCellCount(*node), 0U);
+    const auto cell = TerrainMappingTestPeer::cellAt(*node, 0.85, 0.05);
+    ASSERT_TRUE(cell.has_value());
+    ASSERT_TRUE(cell->ground_valid);
+    EXPECT_NEAR(cell->ground_z, 0.0F, 1e-5F);
+    EXPECT_NEAR(cell->ground_normal_x, 0.0F, 1e-5F);
+    EXPECT_NEAR(cell->ground_normal_y, 0.0F, 1e-5F);
+    EXPECT_NEAR(cell->ground_normal_z, 1.0F, 1e-5F);
+    EXPECT_NEAR(cell->slope_deg, 0.0F, 1e-4F);
+    EXPECT_LT(cell->plane_residual, 1e-5F);
+    EXPECT_GT(cell->ground_confidence, 0.5F);
+}
+
+// 测试估计10度坡度
+TEST_F(TerrainMappingNodeTest, EstimatesTenDegreeSlope) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    constexpr float kSlopeTangent = 0.17632698F;
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(kSlopeTangent)),
+        odom,
+        filtered_points));
+
+    const auto cell = TerrainMappingTestPeer::cellAt(*node, 0.85, 0.05);
+    ASSERT_TRUE(cell.has_value());
+    ASSERT_TRUE(cell->ground_valid);
+    EXPECT_NEAR(cell->ground_z, 0.40F * kSlopeTangent, 1e-4F);
+    EXPECT_NEAR(cell->slope_deg, 10.0F, 0.2F);
+    EXPECT_LT(cell->ground_normal_x, 0.0F);
+    EXPECT_GT(cell->ground_normal_z, 0.0F);
+    EXPECT_LT(cell->plane_residual, 1e-5F);
+}
+
+// 测试拒绝拟合地面平面
+TEST_F(TerrainMappingNodeTest, RejectsGroundFitWithTooFewCells) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    const std::vector<TerrainPoint> points{
+        {0.45F, 0.05F, 0.0F},
+        {0.55F, 0.05F, 0.0F},
+        {0.65F, 0.05F, 0.0F},
+        {0.75F, 0.05F, 0.0F},
+    };
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node, makeCloud(points), odom, filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), points.size());
+    EXPECT_EQ(TerrainMappingTestPeer::groundCellCount(*node), 0U);
+}
+
+// 测试拒绝拟合地面平面
+TEST_F(TerrainMappingNodeTest, RejectsCollinearGroundFit) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    TerrainMappingTestPeer::configureGroundFit(*node, 1.0, 5U);
+    std::vector<TerrainPoint> points;
+    for (int index = 0; index < 9; ++ index) {
+
+        points.push_back({
+            0.45F + 0.10F * static_cast<float>(index),
+            0.05F,
+            0.0F});
+    }
+    auto odom = makeOdom(0.0, 0.0);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node, makeCloud(points), odom, filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), points.size());
+    EXPECT_EQ(TerrainMappingTestPeer::groundCellCount(*node), 0U);
 }
 
 }  // namespace small_point_lio_map_tools
