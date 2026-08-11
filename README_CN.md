@@ -170,14 +170,86 @@ ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
 # 终端 3：rosbag 回放（带 remap，见上）
 ```
 
+### 坐标契约与倾斜安装雷达
+
+车体与雷达的安装外参只保存在共享文件
+`small_point_lio/config/body_lidar.yaml`。前端、关键帧桥接、回环节点和地图
+节点都读取这一个文件；前端节点同时是唯一的静态 TF 发布者，不再启动独立的
+`static_transform_publisher`。共享文件使用标准 ROS 2 参数格式：
+
+```yaml
+/**:
+  ros__parameters:
+    body_frame: "base_link"
+    lidar_frame: "livox_frame"
+    t_body_lidar: [-0.011, -0.02329, 0.04412]
+    rpy_body_lidar: [-0.261, -0.113, 0.0]
+```
+
+`t_body_lidar` 表示雷达原点在车体坐标系中的位置，单位为米；
+`rpy_body_lidar` 表示雷达相对车体的 roll、pitch、yaw，单位为弧度。以上数值
+只是一个安装标定示例，实际车辆必须填写自己的测量结果。重力只能辅助标定
+roll/pitch，不能确定 yaw。
+
+前端使用该文件发布 `body_frame -> lidar_frame`，并统一转换 `/Odometry`、
+`/cloud_registered` 和局部地图反馈。后端信任这个坐标契约，不能再重复施加
+同一安装倾角。需要严格区分以下四类参数：
+
+- 前端传感器 YAML 中的 `extrinsic_T` / `extrinsic_R` 是估计器内部使用的
+  雷达到 IMU 标定外参。不能为了补偿整套雷达/IMU 的倾斜安装而修改
+  `extrinsic_R`。
+- `body_lidar.yaml` 是车体到雷达的物理安装变换，同时决定前端输出坐标基准。
+- `base_to_ground_height` 是地形节点用于寻找脚下地面的几何高度，不是 TF。
+- `map -> odom` 是 PGO 的全局轨迹修正，不是传感器安装外参。
+
+默认启动会自动使用安装后的共享文件，不再填写六个 launch 参数：
+
+```bash
+# 终端 1：前端读取默认传感器配置和默认共享安装外参
+ros2 launch small_point_lio frontend_bringup.launch.py
+
+# 终端 2：后端读取同一个默认共享安装外参
+ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py
+```
+
+假设某次数据采集需要不同的传感器参数和安装标定，先复制并修改对应 YAML，
+然后让前后端显式使用同一路径：
+
+```bash
+ros2 launch small_point_lio frontend_bringup.launch.py \
+  params_file:=/path/to/sensor_params.yaml \
+  body_lidar_config:=/path/to/body_lidar.yaml
+
+ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
+  body_lidar_config:=/path/to/body_lidar.yaml
+```
+
+后端重力对齐模式的实际行为如下：
+
+| 配置 | 运行方式 | 适用场景 |
+|---|---|---|
+| `enable=true`, `source=manual_rpy`, 手动 RPY 为零 | 立即就绪；仍按车体世界姿态生成描述子，但不追加旋转 | 推荐模式：前端已用 `body_lidar.yaml` 输出正确基准 |
+| `enable=true`, `source=manual_rpy`, 手动 RPY 非零 | 立即对后端描述子、PGO 位姿和地图施加固定世界旋转 | 仅修正后端的兼容模式；不会修正前端点云或地形图 |
+| `enable=true`, `source=imu_average` | 启动后平均指定时长的 IMU 加速度；完成前拒绝关键帧，只估计 roll/pitch，不估计 yaw | 兼容前端未对齐的旧数据流；采样期间机器人必须静止 |
+| `enable=false` | 不等待、不做世界旋转，并跳过当前描述子的世界方向处理分支 | 调试用途；不等价于零 RPY，正常运行不推荐 |
+
+因此当前推荐保持 `PGO/config/backend.yaml` 中的
+`gravity_align_enable: true`、`gravity_align_source: manual_rpy` 和
+`gravity_align_manual_rpy_deg: [0, 0, 0]`。`imu_average` 只影响后端，不会修正
+`/cloud_registered` 或地形节点输入；不能用它补救错误的 `body_lidar.yaml`。
+
 `frontend_bringup.launch.py` 支持 `use_sim_time`（默认 `true`）、`rviz`
 （默认 `true`）、`save_pcd`（默认 `false`）、`enable_local_map_feedback`
-（默认 `false`）等参数。默认使用 `small_point_lio/config/mid360.yaml`。
-其他雷达请参照现有示例创建配置文件，通过 `ros2 run` 指定：
+（默认 `false`）、`params_file` 和 `body_lidar_config`。默认分别使用
+`small_point_lio/config/mid360.yaml` 与 `small_point_lio/config/body_lidar.yaml`。
+如果绕过 launch 直接运行节点，两个参数文件都必须传入，且共享安装文件放在
+后面以覆盖传感器 YAML 中可能存在的同名 frame 参数：
 
 ```bash
 ros2 run small_point_lio small_point_lio_node \
-  --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
+  --ros-args \
+  --params-file /path/to/sensor_params.yaml \
+  --params-file /path/to/body_lidar.yaml
 ```
 
 ### 各模式启动的节点
@@ -211,6 +283,18 @@ ros2 run small_point_lio small_point_lio_node \
 
 完整参数列表（含卡尔曼滤波协方差）请参阅 YAML 文件。
 
+### 共享车体-雷达外参（`small_point_lio/config/body_lidar.yaml`）
+
+| 参数 | 说明 |
+|---|---|
+| `body_frame` / `lidar_frame` | 静态 TF 的父、子坐标系 |
+| `t_body_lidar` | 雷达原点在车体坐标系中的 `[x, y, z]`，单位为米 |
+| `rpy_body_lidar` | 雷达相对车体的 `[roll, pitch, yaw]`，单位为弧度 |
+
+该文件由前端、关键帧桥接、回环节点和地图节点共同读取，并在传感器参数文件
+之后加载，因此其中的 frame 参数具有最终决定权。不要在 `backend.yaml`、
+`bridge.yaml` 或 `map.yaml` 中复制这些参数。
+
 ### 后端回环检测（`PGO/config/backend.yaml`）
 
 主要参数：
@@ -226,7 +310,8 @@ ros2 run small_point_lio small_point_lio_node \
 | `loop_gicp_submap_leaf_size` | `0.25` | GICP 子图体素大小（m） |
 | `loop_gicp_max_iterations` | `20` | GICP 每次试验最大迭代数 |
 | `pgo_loop_measurement_mode` | `gravity_preserving_xyz` | `gravity_preserving`（x/y/yaw）、`gravity_preserving_xyz`（x/y/z/yaw）、`full_se3`（全 6 自由度） |
-| `gravity_align_enable` | `true` | 将位姿对齐到 IMU 重力方向 |
+| `gravity_align_enable` | `true` | 保留描述子/世界方向处理通路 |
+| `gravity_align_source` | `manual_rpy` | 默认使用单位手动修正，避免重复施加前端倾角 |
 | `loop_history_max_current_matches` | `2` | 每个 history 关键帧最大回环边数，超过后停用其 LCD 检索（0 = 关闭） |
 | `loop_sequence_max_history_lag_m` | `3.0` | current 与 history 有向里程进度的最大双边偏差（0 = 关闭） |
 | `loop_sequence_max_anchor_progress_m` | `15.0` | pending 等待距离和正式序列锚点的有效距离（0 = 不失效） |

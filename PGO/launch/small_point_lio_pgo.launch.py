@@ -9,6 +9,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     package_share = FindPackageShare("small_point_lio_pgo")
+    frontend_package_share = FindPackageShare("small_point_lio")
     terrain_package_share = FindPackageShare("small_point_lio_map_tools")
     bridge_config = PathJoinSubstitution(
         [package_share, "config", "bridge.yaml"]
@@ -25,16 +26,20 @@ def generate_launch_description():
     default_terrain_config = PathJoinSubstitution(
         [terrain_package_share, "config", "terrain_mapping.yaml"]
     )
+    default_body_lidar_config = PathJoinSubstitution(
+        [frontend_package_share, "config", "body_lidar.yaml"]
+    )
     use_sim_time = LaunchConfiguration("use_sim_time")
     enable_local_map_feedback = LaunchConfiguration(
         "enable_local_map_feedback"
     )
     enable_terrain_mapping = LaunchConfiguration("enable_terrain_mapping")
     terrain_config = LaunchConfiguration("terrain_config")
+    body_lidar_config = LaunchConfiguration("body_lidar_config")
+    gravity_align_source = LaunchConfiguration("gravity_align_source")
     clock_parameter = {
         "use_sim_time": ParameterValue(use_sim_time, value_type=bool)
     }
-
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -60,26 +65,52 @@ def generate_launch_description():
                 default_value=default_terrain_config,
                 description="Terrain mapping parameter file.",
             ),
+            DeclareLaunchArgument(
+                "body_lidar_config",
+                default_value=default_body_lidar_config,
+                description="Shared body-LiDAR mounting parameter file",
+            ),
+            DeclareLaunchArgument(
+                "gravity_align_source",
+                default_value="manual_rpy",
+                description=(
+                    "Backend world alignment source. Keep manual_rpy with "
+                    "zero RPY when the frontend owns gravity alignment."
+                ),
+            ),
             Node(
                 package="small_point_lio_pgo",
                 executable="keyframe_bridge_node",
                 name="small_point_lio_keyframe_bridge",
                 output="screen",
-                parameters=[bridge_config, clock_parameter],
+                parameters=[
+                    bridge_config,
+                    body_lidar_config,
+                    clock_parameter,
+                ],
             ),
             Node(
                 package="small_point_lio_pgo",
                 executable="loop_detector_node",
                 name="small_point_lio_pgo_loop_detector",
                 output="screen",
-                parameters=[backend_config, clock_parameter],
+                parameters=[
+                    backend_config,
+                    body_lidar_config,
+                    clock_parameter,
+                    {"gravity_align_source": gravity_align_source},
+                ],
             ),
             Node(
                 package="small_point_lio_pgo",
                 executable="map_node",
                 name="map_node",
                 output="screen",
-                parameters=[map_config, clock_parameter],
+                parameters=[
+                    map_config,
+                    body_lidar_config,
+                    clock_parameter,
+                ],
             ),
             Node(
                 package="small_point_lio_pgo",

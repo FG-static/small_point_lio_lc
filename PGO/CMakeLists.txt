@@ -255,6 +255,19 @@ if(BUILD_TESTING)
       "${cpp_typesupport_target}"
     )
   endif()
+
+  ament_add_gtest(transform_utils_test
+    test/transform_utils_test.cpp
+  )
+  if(TARGET transform_utils_test)
+    target_include_directories(transform_utils_test
+      PRIVATE
+        include
+    )
+    target_link_libraries(transform_utils_test
+      Eigen3::Eigen
+    )
+  endif()
 endif()
 
 install(TARGETS

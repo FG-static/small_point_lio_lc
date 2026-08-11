@@ -1,10 +1,13 @@
 from launch import LaunchDescription
-from launch.substitutions import PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    package_share = FindPackageShare("small_point_lio")
+
     small_point_lio_node = Node(
         package="small_point_lio",
         executable="small_point_lio_node",
@@ -12,36 +15,21 @@ def generate_launch_description():
         output="screen",
         parameters=[
             PathJoinSubstitution(
-                [
-                    FindPackageShare("small_point_lio"),
-                    "config",
-                    "mid360.yaml",
-                ]
-            )
+                [package_share, "config", "mid360.yaml"]
+            ),
+            LaunchConfiguration("body_lidar_config"),
         ],
     )
 
-    static_base_link_to_livox_frame = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        arguments=[
-            "--x",
-            "-0.011",
-            "--y",
-            "-0.02329",
-            "--z",
-            "0.04412",
-            "--roll",
-            "0.0",
-            "--pitch",
-            "0.0",
-            "--yaw",
-            "0.0",
-            "--frame-id",
-            "base_link",
-            "--child-frame-id",
-            "livox_frame",
-        ],
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "body_lidar_config",
+                default_value=PathJoinSubstitution(
+                    [package_share, "config", "body_lidar.yaml"]
+                ),
+                description="Shared body-LiDAR mounting parameter file",
+            ),
+            small_point_lio_node,
+        ]
     )
-
-    return LaunchDescription([small_point_lio_node, static_base_link_to_livox_frame])

@@ -23,6 +23,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <tf2_ros/buffer.h>
+#include <tf2_ros/static_transform_broadcaster.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
 #include <tf2_ros/transform_listener.h>
 
@@ -47,6 +48,8 @@ namespace small_point_lio {
                 local_tracking_map_subscription;
         nav_msgs::msg::Path path_msg;
         std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
+        std::unique_ptr<tf2_ros::StaticTransformBroadcaster>
+                static_tf_broadcaster;
         std::unique_ptr<tf2_ros::Buffer> tf_buffer;
         std::shared_ptr<tf2_ros::TransformListener> tf_listener;
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr map_save_trigger;
@@ -56,8 +59,16 @@ namespace small_point_lio {
         bool estimator_pose_to_base_pose(
                 const common::Pose3d &estimator_pose,
                 const builtin_interfaces::msg::Time &stamp,
+                const std::string &body_frame,
                 const std::string &lidar_frame,
                 geometry_msgs::msg::Pose &base_pose);
+
+        /// 校验共享安装外参并发布唯一的 body -> LiDAR 静态 TF。
+        void publish_body_lidar_static_transform(
+                const std::string &body_frame,
+                const std::string &lidar_frame,
+                const std::vector<double> &translation,
+                const std::vector<double> &rpy);
 
         static builtin_interfaces::msg::Time timestamp_to_msg(double timestamp);
 

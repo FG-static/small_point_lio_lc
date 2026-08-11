@@ -50,6 +50,13 @@ def generate_launch_description():
                 description="Small Point-LIO parameter file",
             ),
             DeclareLaunchArgument(
+                "body_lidar_config",
+                default_value=PathJoinSubstitution(
+                    [package_share, "config", "body_lidar.yaml"]
+                ),
+                description="Shared body-LiDAR mounting parameter file",
+            ),
+            DeclareLaunchArgument(
                 "rviz_config",
                 default_value=PathJoinSubstitution(
                     [package_share, "config", "small_point_lio_lc.rviz"]
@@ -63,6 +70,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     LaunchConfiguration("params_file"),
+                    LaunchConfiguration("body_lidar_config"),
                     clock_parameter,
                     {
                         "save_pcd": ParameterValue(
@@ -73,31 +81,6 @@ def generate_launch_description():
                         ),
                     },
                 ],
-            ),
-            Node(
-                package="tf2_ros",
-                executable="static_transform_publisher",
-                name="static_base_link_to_livox_frame",
-                output="screen",
-                arguments=[
-                    "--x",
-                    "-0.011",
-                    "--y",
-                    "-0.02329",
-                    "--z",
-                    "0.04412",
-                    "--roll",
-                    "0.0",
-                    "--pitch",
-                    "0.0",
-                    "--yaw",
-                    "0.0",
-                    "--frame-id",
-                    "base_link",
-                    "--child-frame-id",
-                    "livox_frame",
-                ],
-                parameters=[clock_parameter],
             ),
             Node(
                 package="rviz2",

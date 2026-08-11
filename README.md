@@ -185,15 +185,94 @@ ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
 # Terminal 3: rosbag playback (with remap, see above)
 ```
 
+### Coordinate contract and tilted LiDAR mounting
+
+The body-to-LiDAR mounting calibration lives only in the shared
+`small_point_lio/config/body_lidar.yaml` file. The frontend, keyframe bridge,
+loop detector, and map node all read this file. The frontend node is also the
+only static-TF publisher; no separate `static_transform_publisher` is started.
+The file uses the standard ROS 2 parameter format:
+
+```yaml
+/**:
+  ros__parameters:
+    body_frame: "base_link"
+    lidar_frame: "livox_frame"
+    t_body_lidar: [-0.011, -0.02329, 0.04412]
+    rpy_body_lidar: [-0.261, -0.113, 0.0]
+```
+
+`t_body_lidar` is the LiDAR origin expressed in the body frame, in metres.
+`rpy_body_lidar` is the LiDAR roll, pitch, and yaw relative to the body, in
+radians. These values are only an example mounting calibration; measure them
+for the actual robot. Gravity can help estimate roll and pitch, but not yaw.
+
+The frontend publishes `body_frame -> lidar_frame` from this file and uses it
+consistently for `/Odometry`, `/cloud_registered`, and local-map feedback. The
+backend trusts this coordinate contract and must not apply the same mounting
+tilt again. Keep these four parameter groups separate:
+
+- `extrinsic_T` / `extrinsic_R` in the frontend sensor YAML are the calibrated
+  LiDAR-to-IMU transform used inside the estimator. Do not change
+  `extrinsic_R` to compensate for the whole LiDAR/IMU assembly being mounted
+  at an angle.
+- `body_lidar.yaml` is the physical body-to-LiDAR mounting transform and also
+  determines the frontend output basis.
+- `base_to_ground_height` is a terrain-seed height, not a TF.
+- `map -> odom` is a global PGO correction, not a sensor extrinsic.
+
+The default launches automatically use the installed shared file, so the six
+scalar launch arguments are no longer required:
+
+```bash
+# Terminal 1: frontend uses the default sensor and mounting configs
+ros2 launch small_point_lio frontend_bringup.launch.py
+
+# Terminal 2: backend uses the same default mounting config
+ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py
+```
+
+For a hypothetical recording that needs different sensor parameters and a
+different mounting calibration, copy and edit the corresponding YAML files,
+then pass the same mounting file to both launches:
+
+```bash
+ros2 launch small_point_lio frontend_bringup.launch.py \
+  params_file:=/path/to/sensor_params.yaml \
+  body_lidar_config:=/path/to/body_lidar.yaml
+
+ros2 launch small_point_lio_pgo small_point_lio_pgo.launch.py \
+  body_lidar_config:=/path/to/body_lidar.yaml
+```
+
+Backend gravity-alignment modes behave as follows:
+
+| Configuration | Runtime behaviour | Intended use |
+|---|---|---|
+| `enable=true`, `source=manual_rpy`, zero manual RPY | Ready immediately; keeps descriptor world-orientation processing without adding another rotation | Recommended when the frontend already uses `body_lidar.yaml` |
+| `enable=true`, `source=manual_rpy`, non-zero manual RPY | Applies a fixed world rotation to backend descriptors, PGO poses, and maps | Backend-only legacy correction; does not fix frontend clouds or terrain maps |
+| `enable=true`, `source=imu_average` | Averages IMU acceleration for the configured duration; rejects keyframes until ready; estimates roll/pitch but not yaw | Legacy input whose frontend basis is not aligned; the robot must remain still while sampling |
+| `enable=false` | Does not wait or rotate, and bypasses the current descriptor world-orientation path | Debugging only; not equivalent to zero manual RPY and not recommended normally |
+
+The recommended `PGO/config/backend.yaml` settings are therefore
+`gravity_align_enable: true`, `gravity_align_source: manual_rpy`, and
+`gravity_align_manual_rpy_deg: [0, 0, 0]`. `imu_average` affects only the
+backend; it does not correct `/cloud_registered` or the terrain mapper input,
+and cannot repair an incorrect `body_lidar.yaml`.
+
 `frontend_bringup.launch.py` accepts `use_sim_time` (default `true`), `rviz`
 (default `true`), `save_pcd` (default `false`), and
-`enable_local_map_feedback` (default `false`).  Uses
-`small_point_lio/config/mid360.yaml` by default.  For other LiDARs, create a
-config based on the existing examples and pass it via `ros2 run`:
+`enable_local_map_feedback` (default `false`), plus `params_file` and
+`body_lidar_config`. Their defaults are `small_point_lio/config/mid360.yaml`
+and `small_point_lio/config/body_lidar.yaml`. When bypassing launch, pass both
+files and put the shared mounting file last so it overrides any duplicate frame
+parameters in a sensor YAML:
 
 ```bash
 ros2 run small_point_lio small_point_lio_node \
-  --ros-args --params-file src/small_point_lio/config/unilidar_l2.yaml
+  --ros-args \
+  --params-file /path/to/sensor_params.yaml \
+  --params-file /path/to/body_lidar.yaml
 ```
 
 ### What each mode starts
@@ -227,6 +306,19 @@ ros2 run small_point_lio small_point_lio_node \
 
 See the YAML files for the full list including Kalman filter covariances.
 
+### Shared body-LiDAR extrinsic (`small_point_lio/config/body_lidar.yaml`)
+
+| Parameter | Description |
+|---|---|
+| `body_frame` / `lidar_frame` | Parent and child frames of the static TF |
+| `t_body_lidar` | LiDAR origin `[x, y, z]` expressed in the body frame, in metres |
+| `rpy_body_lidar` | LiDAR `[roll, pitch, yaw]` relative to the body, in radians |
+
+The frontend, keyframe bridge, loop detector, and map node all read this file.
+It is loaded after the sensor parameters, so its frame values are authoritative.
+Do not duplicate these parameters in `backend.yaml`, `bridge.yaml`, or
+`map.yaml`.
+
 ### Backend loop detector (`PGO/config/backend.yaml`)
 
 Key parameters:
@@ -242,7 +334,8 @@ Key parameters:
 | `loop_gicp_submap_leaf_size` | `0.25` | GICP submap voxel size (m) |
 | `loop_gicp_max_iterations` | `20` | GICP max iterations per trial |
 | `pgo_loop_measurement_mode` | `gravity_preserving_xyz` | `gravity_preserving` (x/y/yaw), `gravity_preserving_xyz` (x/y/z/yaw), or `full_se3` (all 6 DoF) |
-| `gravity_align_enable` | `true` | Align poses to IMU gravity |
+| `gravity_align_enable` | `true` | Keep descriptor/world orientation processing enabled |
+| `gravity_align_source` | `manual_rpy` | Identity manual alignment by default; prevents duplicate frontend tilt correction |
 | `loop_history_max_current_matches` | `2` | Max loop edges per history keyframe before disabling its LCD retrieval (0 = disable) |
 | `loop_sequence_max_history_lag_m` | `3.0` | Max bilateral deviation between current and history travel progress (0 = disable) |
 | `loop_sequence_max_anchor_progress_m` | `15.0` | Max pending/anchor travel distance for sequence validity (0 = disable) |

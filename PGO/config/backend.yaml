@@ -16,36 +16,13 @@ small_point_lio_pgo_loop_detector:
     map_to_odom_publish_rate_hz: 20.0
     # Deprecated alias retained for older launch files.
     marker_frame: "map"
-    body_frame: "base_link"
-    lidar_frame: "livox_frame"
-    t_body_lidar: [-0.011, -0.02329, 0.04412]
-    q_body_lidar: [1.0, 0.0, 0.0, 0.0]
-    T_body_lidar:
-      [
-        1.0,
-        0.0,
-        0.0,
-        -0.011,
-        0.0,
-        1.0,
-        0.0,
-        -0.02329,
-        0.0,
-        0.0,
-        1.0,
-        0.04412,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-      ]
     gravity_align_enable: true
-    gravity_align_source: "imu_average" # imu_average / manual_rpy
+    # The frontend static TF owns gravity alignment. Keep this identity manual
+    # mode enabled so descriptor clouds still use the world/body orientation.
+    gravity_align_source: "manual_rpy" # imu_average / manual_rpy
     gravity_align_imu_topic: "/livox/imu"
     gravity_align_sample_sec: 5.0 # GRAVITY ALIGN SAMPLE TIME
     gravity_align_acc_scale: 9.80665
-    # Garage bag reference from the first 20s IMU average:
-    # approximately [-15.23, -6.20, 0.83] degrees.
     gravity_align_manual_rpy_deg: [0.0, 0.0, 0.0]
     gravity_align_apply_to_descriptor: true
     gravity_align_apply_to_pgo: true
@@ -96,7 +73,7 @@ small_point_lio_pgo_loop_detector:
     loop_gicp_min_inliers: 100
     loop_gicp_min_inlier_ratio: 0.50
     loop_gicp_max_registration_error: 20000.0
-    pgo_enable: false
+    pgo_enable: true
     pgo_optimize_on_loop: true
     pgo_max_iterations: 20
     pgo_odom_edge_weight: 150.0

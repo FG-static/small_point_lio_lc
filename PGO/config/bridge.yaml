@@ -7,7 +7,6 @@ small_point_lio_keyframe_bridge:
     # accepted frames on /keyframe_msg.
     keyframe_topic: "/keyframe_candidates"
     odom_frame: "odom"
-    body_frame: "base_link"
     max_cloud_delay_sec: 0.05
     odom_buffer_duration_sec: 1.0
     # Match the validated small_dlio behavior: about 10 packets at 100 Hz,

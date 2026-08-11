@@ -10,6 +10,8 @@
 #include "lidar_adapter/livox_custom_msg.h"
 #include "lidar_adapter/livox_pointcloud2.h"
 #include "lidar_adapter/unitree_lidar.h"
+#include <algorithm>
+#include <cmath>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <stdexcept>
@@ -23,6 +25,12 @@ namespace small_point_lio {
         std::string imu_topic = declare_parameter<std::string>("imu_topic");
         std::string lidar_type = declare_parameter<std::string>("lidar_type");
         std::string lidar_frame = declare_parameter<std::string>("lidar_frame");
+        const std::string body_frame =
+                declare_parameter<std::string>("body_frame", "base_link");
+        const std::vector<double> t_body_lidar =
+                declare_parameter<std::vector<double>>("t_body_lidar");
+        const std::vector<double> rpy_body_lidar =
+                declare_parameter<std::vector<double>>("rpy_body_lidar");
         bool save_pcd = declare_parameter<bool>("save_pcd");
         small_point_lio = std::make_unique<small_point_lio::SmallPointLio>(*this);
         bool local_map_feedback_enable = false;
@@ -40,6 +48,8 @@ namespace small_point_lio {
         path_publisher = create_publisher<nav_msgs::msg::Path>("/path", 1000);
         path_msg.header.frame_id = "odom";
         tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        publish_body_lidar_static_transform(
+                body_frame, lidar_frame, t_body_lidar, rpy_body_lidar);
         tf_buffer = std::make_unique<tf2_ros::Buffer>(get_clock());
         tf_listener = std::make_shared<tf2_ros::TransformListener>(*tf_buffer);
         if (save_pcd) {
@@ -63,7 +73,7 @@ namespace small_point_lio {
                         RCLCPP_INFO(rclcpp::get_logger("small_point_lio"), "save pcd success");
                     }).detach();
                 });
-        small_point_lio->set_odometry_callback([this, lidar_frame](const common::Odometry &odometry) {
+        small_point_lio->set_odometry_callback([this, body_frame, lidar_frame](const common::Odometry &odometry) {
             last_odometry = odometry;
 
             const builtin_interfaces::msg::Time time_msg =
@@ -74,14 +84,15 @@ namespace small_point_lio {
             estimator_pose.orientation = odometry.orientation;
             geometry_msgs::msg::Pose base_pose;
             if (!estimator_pose_to_base_pose(
-                        estimator_pose, time_msg, lidar_frame, base_pose)) {
+                        estimator_pose, time_msg, body_frame,
+                        lidar_frame, base_pose)) {
                 return;
             }
 
             geometry_msgs::msg::TransformStamped transform_stamped;
             transform_stamped.header.stamp = time_msg;
             transform_stamped.header.frame_id = "odom";
-            transform_stamped.child_frame_id = "base_link";
+            transform_stamped.child_frame_id = body_frame;
             transform_stamped.transform.translation.x = base_pose.position.x;
             transform_stamped.transform.translation.y = base_pose.position.y;
             transform_stamped.transform.translation.z = base_pose.position.z;
@@ -90,7 +101,7 @@ namespace small_point_lio {
             nav_msgs::msg::Odometry odometry_msg;
             odometry_msg.header.stamp = time_msg;
             odometry_msg.header.frame_id = "odom";
-            odometry_msg.child_frame_id = "base_link";
+            odometry_msg.child_frame_id = body_frame;
             odometry_msg.pose.pose = base_pose;
 
             // TODO it is lidar_odom->lidar_frame, we need to transform it to odom->base_link
@@ -111,7 +122,7 @@ namespace small_point_lio {
             path_msg.poses.push_back(pose_stamped);
             path_publisher->publish(path_msg);
         });
-        small_point_lio->set_pointcloud_callback([this, save_pcd, lidar_frame](const std::vector<Eigen::Vector3f> &pointcloud) {
+        small_point_lio->set_pointcloud_callback([this, save_pcd, body_frame, lidar_frame](const std::vector<Eigen::Vector3f> &pointcloud) {
             if (pointcloud_publisher->get_subscription_count() > 0) {
                 builtin_interfaces::msg::Time time_msg;
                 time_msg.sec = std::floor(last_odometry.timestamp);
@@ -119,9 +130,13 @@ namespace small_point_lio {
 
                 geometry_msgs::msg::TransformStamped lidar_frame_to_base_link_transform;
                 try {
-                    lidar_frame_to_base_link_transform = tf_buffer->lookupTransform("base_link", lidar_frame, time_msg);
+                    lidar_frame_to_base_link_transform = tf_buffer->lookupTransform(
+                            body_frame, lidar_frame, time_msg);
                 } catch (tf2::TransformException &ex) {
-                    RCLCPP_ERROR(rclcpp::get_logger("small_point_lio"), "Failed to lookup transform from %s to base_link: %s", lidar_frame.c_str(), ex.what());
+                    RCLCPP_ERROR(
+                            get_logger(),
+                            "Failed to lookup transform from %s to %s: %s",
+                            lidar_frame.c_str(), body_frame.c_str(), ex.what());
                     return;
                 }
                 Eigen::Vector3f lidar_frame_to_base_link_T;
@@ -194,7 +209,7 @@ namespace small_point_lio {
                     scan_to_map_correction_topic,
                     rclcpp::QoS(100).reliable());
             small_point_lio->set_scan_to_map_correction_callback(
-                    [this, lidar_frame](
+                    [this, body_frame, lidar_frame](
                             const common::ScanToMapCorrection &correction) {
                         small_point_lio_interfaces::msg::ScanToMapCorrection msg;
                         msg.header.stamp = timestamp_to_msg(correction.timestamp);
@@ -204,16 +219,19 @@ namespace small_point_lio {
                         if (!estimator_pose_to_base_pose(
                                     correction.packet_predicted_pose,
                                     msg.header.stamp,
+                                    body_frame,
                                     lidar_frame,
                                     msg.packet_predicted_pose) ||
                             !estimator_pose_to_base_pose(
                                     correction.epoch_predicted_pose,
                                     msg.header.stamp,
+                                    body_frame,
                                     lidar_frame,
                                     msg.epoch_predicted_pose) ||
                             !estimator_pose_to_base_pose(
                                     correction.corrected_pose,
                                     msg.header.stamp,
+                                    body_frame,
                                     lidar_frame,
                                     msg.corrected_pose)) {
                             return;
@@ -233,7 +251,7 @@ namespace small_point_lio {
                     small_point_lio_interfaces::msg::LocalTrackingMap>(
                     local_tracking_map_topic,
                     rclcpp::QoS(1).reliable(),
-                    [this, lidar_frame](const small_point_lio_interfaces::msg::
+                    [this, body_frame, lidar_frame](const small_point_lio_interfaces::msg::
                                    LocalTrackingMap::ConstSharedPtr msg) {
                         if (msg->header.frame_id != "odom" ||
                             msg->cloud.header.frame_id != "odom") {
@@ -270,7 +288,7 @@ namespace small_point_lio {
                         try {
                             lidar_from_base_msg = tf_buffer->lookupTransform(
                                     lidar_frame,
-                                    "base_link",
+                                    body_frame,
                                     msg->header.stamp);
                         } catch (const tf2::TransformException &error) {
                             RCLCPP_WARN(
@@ -380,17 +398,18 @@ namespace small_point_lio {
     bool SmallPointLioNode::estimator_pose_to_base_pose(
             const common::Pose3d &estimator_pose,
             const builtin_interfaces::msg::Time &stamp,
+            const std::string &body_frame,
             const std::string &lidar_frame,
             geometry_msgs::msg::Pose &base_pose) {
         geometry_msgs::msg::TransformStamped lidar_from_base_msg;
         try {
             lidar_from_base_msg =
-                    tf_buffer->lookupTransform(lidar_frame, "base_link", stamp);
+                    tf_buffer->lookupTransform(lidar_frame, body_frame, stamp);
         } catch (const tf2::TransformException &error) {
             RCLCPP_ERROR(
                     get_logger(),
-                    "Failed to lookup transform from base_link to %s: %s",
-                    lidar_frame.c_str(),
+                    "Failed to lookup transform from %s to %s: %s",
+                    body_frame.c_str(), lidar_frame.c_str(),
                     error.what());
             return false;
         }
@@ -428,6 +447,58 @@ namespace small_point_lio {
         base_pose.position.z = transform_msg.translation.z;
         base_pose.orientation = transform_msg.rotation;
         return true;
+    }
+
+    void SmallPointLioNode::publish_body_lidar_static_transform(
+            const std::string &body_frame,
+            const std::string &lidar_frame,
+            const std::vector<double> &translation,
+            const std::vector<double> &rpy) {
+        const auto valid_vector = [](const std::vector<double> &values) {
+            return values.size() == 3U &&
+                    std::all_of(
+                            values.begin(), values.end(),
+                            [](const double value) {
+                                return std::isfinite(value);
+                            });
+        };
+        if (body_frame.empty() || lidar_frame.empty() ||
+            body_frame == lidar_frame) {
+            throw std::invalid_argument(
+                    "body_frame and lidar_frame must be non-empty and different");
+        }
+        if (!valid_vector(translation)) {
+            throw std::invalid_argument(
+                    "t_body_lidar must contain 3 finite values in metres");
+        }
+        if (!valid_vector(rpy)) {
+            throw std::invalid_argument(
+                    "rpy_body_lidar must contain 3 finite values in radians");
+        }
+
+        tf2::Quaternion rotation;
+        rotation.setRPY(rpy[0], rpy[1], rpy[2]);
+        rotation.normalize();
+
+        geometry_msgs::msg::TransformStamped transform;
+        transform.header.stamp = now();
+        transform.header.frame_id = body_frame;
+        transform.child_frame_id = lidar_frame;
+        transform.transform.translation.x = translation[0];
+        transform.transform.translation.y = translation[1];
+        transform.transform.translation.z = translation[2];
+        transform.transform.rotation = tf2::toMsg(rotation);
+
+        static_tf_broadcaster =
+                std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
+        static_tf_broadcaster->sendTransform(transform);
+        RCLCPP_INFO(
+                get_logger(),
+                "Shared body-LiDAR TF: %s -> %s t=[%.6f %.6f %.6f] "
+                "rpy_rad=[%.6f %.6f %.6f]",
+                body_frame.c_str(), lidar_frame.c_str(),
+                translation[0], translation[1], translation[2],
+                rpy[0], rpy[1], rpy[2]);
     }
 
     builtin_interfaces::msg::Time SmallPointLioNode::timestamp_to_msg(

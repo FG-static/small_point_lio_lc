@@ -1,4 +1,5 @@
 #include "small_point_lio_pgo/map_node.hpp"
+#include "small_point_lio_pgo/transform_utils.hpp"
 
 #include "small_point_lio_pgo/msg/key_frame.hpp"
 #include "small_point_lio_pgo/msg/optimized_key_frames.hpp"
@@ -131,85 +132,57 @@ namespace small_point_lio_pgo {
 
         const std::vector<double> t_default = {0.0, 0.0, 0.0};
         const std::vector<double> q_default = {1.0, 0.0, 0.0, 0.0};
-        std::vector<double> t, q, matrix;
+        std::vector<double> t, rpy, q, matrix;
         this->declare_parameter("t_body_lidar", t_default);
         this->get_parameter("t_body_lidar", t);
+        this->declare_parameter("rpy_body_lidar", std::vector<double>{});
+        this->get_parameter("rpy_body_lidar", rpy);
         this->declare_parameter("q_body_lidar", q_default);
         this->get_parameter("q_body_lidar", q);
         this->declare_parameter("T_body_lidar", std::vector<double>{});
         this->get_parameter("T_body_lidar", matrix);
 
-        Eigen::Vector3d translation = Eigen::Vector3d::Zero();
-        Eigen::Quaterniond rotation = Eigen::Quaterniond::Identity();
-
-        // 支持 t/q 和 T_body_lidar 两种外参配置。完整矩阵存在时优先使用，
-        // 这样 launch/yaml 可以直接复用标定工具输出。
-        if (t.size() == 3) {
-            translation = Eigen::Vector3d(t[0], t[1], t[2]);
-        } else {
+        const BodyLidarTransformResult result =
+                makeBodyLidarTransform(t, rpy, q, matrix);
+        if (!result.matrix_valid && !result.translation_valid) {
             RCLCPP_WARN(
                 get_logger(),
-                "t_body_lidar must have 3 elements, got %zu; using zero translation",
+                "t_body_lidar must contain 3 finite values, got %zu; using zero translation",
                 t.size()
             );
         }
-
-        if (q.size() == 4) {
-            rotation = Eigen::Quaterniond(q[0], q[1], q[2], q[3]);
-        } else {
+        if (result.rpy_provided && !result.rpy_valid &&
+            !result.matrix_valid) {
             RCLCPP_WARN(
                 get_logger(),
-                "q_body_lidar must have 4 elements [w,x,y,z], got %zu; using identity rotation",
-                q.size()
+                "rpy_body_lidar must contain 3 finite values [roll,pitch,yaw] in radians; "
+                "falling back to q_body_lidar"
+            );
+        }
+        if (!result.rpy_valid && !result.quaternion_valid &&
+            !result.matrix_valid) {
+            RCLCPP_WARN(
+                get_logger(),
+                "q_body_lidar must contain a finite non-zero [w,x,y,z]; using identity rotation"
+            );
+        }
+        if (result.matrix_provided && !result.matrix_valid) {
+            RCLCPP_WARN(
+                get_logger(),
+                "T_body_lidar must be a finite row-major rigid 4x4 matrix; "
+                "falling back to t/rpy/q parameters"
             );
         }
 
-        if (matrix.size() == 16) {
-            Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
-            for (int r = 0; r < 4; ++r)
-                for (int c = 0; c < 4; ++c)
-                    T(r, c) = matrix[static_cast<size_t>(r * 4 + c)];
-
-            if (T.allFinite()) {
-                translation = T.block<3, 1>(0, 3);
-                rotation = Eigen::Quaterniond(T.block<3, 3>(0, 0));
-            } else {
-                RCLCPP_WARN(
-                    get_logger(),
-                    "T_body_lidar contains non-finite values; falling back to t_body_lidar/q_body_lidar"
-                );
-            }
-        } else if (!matrix.empty()) {
-            RCLCPP_WARN(
-                get_logger(),
-                "T_body_lidar must be a row-major 4x4 matrix with 16 elements, got %zu; "
-                "falling back to t_body_lidar/q_body_lidar",
-                matrix.size()
-            );
-        }
-
-        if (!translation.allFinite() ||
-            !rotation.coeffs().allFinite() ||
-            rotation.norm() < 1e-9) {
-
-            RCLCPP_WARN(
-                get_logger(),
-                "body->lidar extrinsic is invalid; using identity"
-            );
-            translation.setZero();
-            rotation.setIdentity();
-        } else {
-
-            rotation.normalize();
-        }
-
-        T_body_lidar_ = Eigen::Isometry3d::Identity();
-        T_body_lidar_.linear() = rotation.toRotationMatrix();
-        T_body_lidar_.translation() = translation;
+        T_body_lidar_ = result.transform;
+        const Eigen::Quaterniond rotation(T_body_lidar_.rotation());
+        const Eigen::Vector3d translation = T_body_lidar_.translation();
 
         RCLCPP_INFO(
             get_logger(),
-            "Map T_body_lidar: t=[%.6f %.6f %.6f] q=[%.6f %.6f %.6f %.6f]",
+            "Map T_body_lidar (%s): t=[%.6f %.6f %.6f] "
+            "q=[%.6f %.6f %.6f %.6f]",
+            rotationParameterSourceName(result.rotation_source),
             translation.x(), translation.y(), translation.z(),
             rotation.w(), rotation.x(), rotation.y(), rotation.z()
         );

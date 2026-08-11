@@ -1416,9 +1416,9 @@ void TerrainMappingNode::publishDebugOutputs(
                 if (!cell.ground_valid)
                     continue;
 
-                const long rounded_slope = std::lround(cell.slope_deg);
+                const long normalized_slope = std::clamp(cell.slope_deg / 25.0, 0.0, 1.0);
                 slope_map.data[index] = static_cast<std::int8_t>(
-                    std::clamp(rounded_slope, 0L, 90L));
+                    std::lround(normalized_slope * 100.0));
             }
         }
         slope_map_publisher_->publish(slope_map);

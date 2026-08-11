@@ -22,7 +22,7 @@ terrain_mapping_node:
     # 地面种子和支撑面传播。
     # 必须替换为 base_link 原点沿底盘负 Z 方向到地面的实测距离。
     # 保持为 0.0 时，节点会安全禁用地面传播。
-    base_to_ground_height: 0.05
+    base_to_ground_height: 1.52 # 0.05
     seed_radius: 1.50
     seed_height_tolerance: 0.15
     seed_min_cells: 3

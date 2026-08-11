@@ -1,0 +1,11 @@
+/**:
+  ros__parameters:
+    # Shared body <- LiDAR mounting transform used by the frontend and PGO.
+    body_frame: "base_link"
+    lidar_frame: "livox_frame"
+
+    # LiDAR origin expressed in body_frame, in metres.
+    t_body_lidar: [-0.011, -0.02329, 0.04412]
+
+    # LiDAR orientation relative to body_frame: [roll, pitch, yaw], in radians.
+    rpy_body_lidar: [-0.261, -0.113, 0.0]

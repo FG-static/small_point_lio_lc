@@ -8,28 +8,5 @@ map_node:
         apply_pgo_correction_to_unoptimized_keyframes: true
         # 每收到 N 个关键帧才重建一次全局地图；PGO 快照始终立即重建。
         keyframe_rebuild_interval: 20
-        body_frame: "base_link"
-        lidar_frame: "livox_frame"
-        t_body_lidar: [-0.011, -0.02329, 0.04412]
-        q_body_lidar: [1.0, 0.0, 0.0, 0.0]
-        T_body_lidar:
-            [
-                1.0,
-                0.0,
-                0.0,
-                -0.011,
-                0.0,
-                1.0,
-                0.0,
-                -0.02329,
-                0.0,
-                0.0,
-                1.0,
-                0.04412,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ]
         save_map_service_name: "/map_save_lc"
         map_save_path: "/home/goose/small_point_lio_lc/global_map.pcd"
