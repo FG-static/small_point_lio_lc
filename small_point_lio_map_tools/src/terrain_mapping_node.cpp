@@ -114,6 +114,19 @@ void TerrainMappingNode::loadParams() {
         ? static_cast<std::size_t>(buffer_size)
         : 1U;
 
+    const auto pending_cloud_size = declare_parameter<std::int64_t>(
+        "max_pending_cloud_size",
+        static_cast<std::int64_t>(max_pending_cloud_size_));
+    if (pending_cloud_size <= 0) {
+
+        RCLCPP_WARN(
+            get_logger(),
+            "max_pending_cloud_size must be positive; using 1");
+    }
+    max_pending_cloud_size_ = pending_cloud_size > 0
+        ? static_cast<std::size_t>(pending_cloud_size)
+        : 1U;
+
     max_sync_delay_ns_ = declare_parameter<std::int64_t>(
         "max_sync_delay_ns",
         max_sync_delay_ns_);
@@ -457,36 +470,58 @@ void TerrainMappingNode::onCloud(const CloudMsg::ConstSharedPtr msg) {
         return;
     }
 
-    const auto stamp = stampToNanoseconds(msg->header.stamp);
-    OdomSample matched_odom;
+    const auto stamp_ns = stampToNanoseconds(msg->header.stamp);
+    if (stamp_ns < 0) return;
 
-    if (!findNearestOdom(stamp, matched_odom)) {
-
-        RCLCPP_WARN_THROTTLE(
-            get_logger(), *get_clock(), 2000,
-            "No odometry sample matches cloud stamp %ld within %ld ns",
-            static_cast<long>(stamp),
-            static_cast<long>(max_sync_delay_ns_));
-        return;
+    // 将点云添加到待处理队列中
+    {
+        std::lock_guard<std::mutex> lock(sync_mutex_);
+        const auto insertion = std::upper_bound(
+            pending_clouds_.begin(),
+            pending_clouds_.end(),
+            stamp_ns,
+            [](std::int64_t stamp, const PendingCloud &pending) {
+                return stamp < pending.stamp_ns;
+            });
+        pending_clouds_.insert(insertion, PendingCloud{stamp_ns, msg});
     }
+
+    tryMatchPendingClouds();
+}
+
+/**
+ * @brief 处理匹配到的点云
+ * @param matched_input 匹配到的点云和里程计样本
+ */
+void TerrainMappingNode::processMatchedCloud(
+    const MatchedInput &matched_input
+) {
+
+    if (!matched_input.cloud) return;
+
+    const auto stamp_ns = stampToNanoseconds(
+        matched_input.cloud->header.stamp);
 
     std::vector<TerrainPoint> filtered_points;
     bool ground_support_updated = false;
     if (!processSynchronizedCloud(
-            *msg,
-            matched_odom,
+            *matched_input.cloud,
+            matched_input.odom,
             filtered_points,
             &ground_support_updated)) {
         return;
     }
 
-    publishDebugOutputs(*msg, filtered_points, ground_support_updated);
+    publishDebugOutputs(
+        *matched_input.cloud,
+        filtered_points,
+        ground_support_updated);
 
     RCLCPP_DEBUG(
         get_logger(),
         "Processed cloud stamp %ld with odometry stamp %ld: %zu points",
-        static_cast<long>(stamp),
-        static_cast<long>(matched_odom.stamp_ns),
+        static_cast<long>(stamp_ns),
+        static_cast<long>(matched_input.odom.stamp_ns),
         filtered_points.size());
 }
 
@@ -538,12 +573,18 @@ void TerrainMappingNode::onOdom(const OdomMsg::ConstSharedPtr msg) {
     odom_sample.orientation_y = orientation.y;
     odom_sample.orientation_z = orientation.z;
 
+    // 检查是否有时间倒退，如果有则清空缓冲区
     bool time_moved_backwards = false;
     {
-        std::lock_guard<std::mutex> lock(odom_mutex_);
+        std::lock_guard<std::mutex> lock(sync_mutex_);
         time_moved_backwards = !odom_buffer_.empty() &&
             odom_sample.stamp_ns < odom_buffer_.back().stamp_ns;
-        trimOdomBuffer(odom_sample.stamp_ns);
+        if (time_moved_backwards) {
+
+            odom_buffer_.clear();
+            pending_clouds_.clear();
+        }
+        trimOdomBufferLocked();
         odom_buffer_.push_back(odom_sample);
     }
 
@@ -554,6 +595,8 @@ void TerrainMappingNode::onOdom(const OdomMsg::ConstSharedPtr msg) {
             get_logger(),
             "Odometry time moved backwards; reset synchronization and terrain map");
     }
+
+    tryMatchPendingClouds();
 }
 
 /**
@@ -1778,14 +1821,85 @@ void TerrainMappingNode::publishDebugOutputs(
     }
 }
 
-void TerrainMappingNode::trimOdomBuffer(std::int64_t newest_stamp_ns) {
+/**
+ * @brief 尝试匹配待处理的点云
+ */
+void TerrainMappingNode::tryMatchPendingClouds() {
 
-    // 该函数由持有 odom_mutex_ 的里程计回调调用。
-    if (!odom_buffer_.empty() &&
-        newest_stamp_ns < odom_buffer_.back().stamp_ns) {
-        odom_buffer_.clear();
+    std::vector<MatchedInput> matched_inputs;
+    std::size_t expired_count = 0U;
+    std::size_t overflow_dropped = 0U;
+    // 锁定同步互斥量，确保线程安全
+    {
+        std::lock_guard<std::mutex> lock(sync_mutex_);
+        if (pending_clouds_.empty()) return;
+
+        if (!odom_buffer_.empty()) {
+
+            const std::int64_t newest_odom_stamp_ns =
+                odom_buffer_.back().stamp_ns;
+            auto pending = pending_clouds_.begin();
+            while (pending != pending_clouds_.end()) {
+
+                // Odom 尚未追上该帧时继续等待，避免过早使用旧位姿。
+                if (pending->stamp_ns > newest_odom_stamp_ns)
+                    break;
+
+                OdomSample matched_odom;
+                if (findNearestOdomLocked(pending->stamp_ns, matched_odom)) {
+
+                    matched_inputs.push_back(
+                        MatchedInput{pending->msg, matched_odom});
+                    pending = pending_clouds_.erase(pending);
+                    continue;
+                }
+
+                const auto odom_ahead_ns = static_cast<std::uint64_t>(
+                    newest_odom_stamp_ns - pending->stamp_ns);
+                if (odom_ahead_ns >
+                    static_cast<std::uint64_t>(max_sync_delay_ns_)) {
+
+                    pending = pending_clouds_.erase(pending);
+                    ++ expired_count;
+                } else {
+
+                    ++ pending;
+                }
+            }
+        }
+
+        while (pending_clouds_.size() > max_pending_cloud_size_) {
+
+            pending_clouds_.pop_front();
+            ++ overflow_dropped;
+        }
     }
 
+    if (expired_count > 0U) {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Expired %zu cloud(s) without matching odometry within %ld ns",
+            expired_count,
+            static_cast<long>(max_sync_delay_ns_));
+    }
+    if (overflow_dropped > 0U) {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Pending cloud queue overflow; dropped %zu oldest cloud(s)",
+            overflow_dropped);
+    }
+
+    // 点云处理和发布可能较慢，不能占用同步缓存互斥锁。
+    for (const auto &matched_input : matched_inputs)
+        processMatchedCloud(matched_input);
+}
+
+/**
+ * @brief 锁定同步缓存互斥量后，修剪里程计缓冲区
+ */
+void TerrainMappingNode::trimOdomBufferLocked() {
+
+    // 该函数由持有 sync_mutex_ 的里程计回调调用。
     const std::size_t keep_before_insert = max_odom_buffer_size_ - 1U;
     while (odom_buffer_.size() > keep_before_insert)
         odom_buffer_.pop_front();
@@ -1798,7 +1912,7 @@ std::int64_t TerrainMappingNode::stampToNanoseconds(
     return stamp.nanoseconds();
 }
 
-bool TerrainMappingNode::findNearestOdom(
+bool TerrainMappingNode::findNearestOdomLocked(
     std::int64_t cloud_stamp_ns,
     OdomSample &matched_odom
 ) const {
@@ -1806,7 +1920,7 @@ bool TerrainMappingNode::findNearestOdom(
     if (cloud_stamp_ns < 0 || max_sync_delay_ns_ < 0)
         return false;
 
-    std::lock_guard<std::mutex> lock(odom_mutex_);
+    // 调用者必须持有 sync_mutex_，保证搜索期间缓存不变化。
     if (odom_buffer_.empty()) return false;
 
     const auto absoluteDifference = [](

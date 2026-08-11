@@ -6,6 +6,8 @@ terrain_mapping_node:
     odom_frame: "odom"
     base_frame: "base_link"
     max_odom_buffer_size: 200
+    # Cloud 先到时暂存，等待任一侧回调触发时间匹配。
+    max_pending_cloud_size: 20
     max_sync_delay_ns: 50000000
 
     # 局部滚动栅格。

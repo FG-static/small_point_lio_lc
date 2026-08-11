@@ -140,17 +140,67 @@ public:
         return node.terrain_origin_x_;
     }
 
+    static void onCloud(
+        TerrainMappingNode & node,
+        const sensor_msgs::msg::PointCloud2 & cloud
+    ) {
+
+        node.onCloud(
+            std::make_shared<sensor_msgs::msg::PointCloud2>(cloud));
+    }
+
+    static void onOdomNanoseconds(
+        TerrainMappingNode & node,
+        const std::int64_t stamp_ns,
+        const double position_x = 0.0
+    ) {
+
+        auto msg = std::make_shared<nav_msgs::msg::Odometry>();
+        msg->header.frame_id = "odom";
+        msg->header.stamp.sec = static_cast<std::int32_t>(
+            stamp_ns / 1000000000LL);
+        msg->header.stamp.nanosec = static_cast<std::uint32_t>(
+            stamp_ns % 1000000000LL);
+        msg->child_frame_id = "base_link";
+        msg->pose.pose.position.x = position_x;
+        msg->pose.pose.orientation.w = 1.0;
+        node.onOdom(msg);
+    }
+
     static void onOdom(
         TerrainMappingNode & node,
         const std::int32_t seconds
     ) {
 
-        auto msg = std::make_shared<nav_msgs::msg::Odometry>();
-        msg->header.frame_id = "odom";
-        msg->header.stamp.sec = seconds;
-        msg->child_frame_id = "base_link";
-        msg->pose.pose.orientation.w = 1.0;
-        node.onOdom(msg);
+        onOdomNanoseconds(
+            node,
+            static_cast<std::int64_t>(seconds) * 1000000000LL);
+    }
+
+    static void configureSynchronization(
+        TerrainMappingNode & node,
+        const std::size_t max_pending_cloud_size,
+        const std::int64_t max_sync_delay_ns
+    ) {
+
+        node.max_pending_cloud_size_ = max_pending_cloud_size;
+        node.max_sync_delay_ns_ = max_sync_delay_ns;
+    }
+
+    static std::size_t pendingCloudCount(const TerrainMappingNode & node) {
+
+        std::lock_guard<std::mutex> lock(node.sync_mutex_);
+        return node.pending_clouds_.size();
+    }
+
+    static std::int64_t oldestPendingCloudStamp(
+        const TerrainMappingNode & node
+    ) {
+
+        std::lock_guard<std::mutex> lock(node.sync_mutex_);
+        return node.pending_clouds_.empty()
+            ? -1
+            : node.pending_clouds_.front().stamp_ns;
     }
 };
 
@@ -250,6 +300,170 @@ protected:
     }
 };
 
+TEST_F(TerrainMappingNodeTest, MatchesCloudWhenOdomArrivesFirst) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    constexpr std::int64_t kStampNs = 1000000000LL;
+
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, kStampNs);
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, kStampNs));
+
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 0U);
+    EXPECT_TRUE(TerrainMappingTestPeer::gridInitialized(*node));
+    EXPECT_EQ(TerrainMappingTestPeer::observedCellCount(*node), 1U);
+}
+
+TEST_F(TerrainMappingNodeTest, MatchesPendingCloudWhenOdomArrivesLater) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    constexpr std::int64_t kStampNs = 1000000000LL;
+
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, kStampNs));
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 1U);
+    EXPECT_FALSE(TerrainMappingTestPeer::gridInitialized(*node));
+
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, kStampNs);
+
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 0U);
+    EXPECT_TRUE(TerrainMappingTestPeer::gridInitialized(*node));
+    EXPECT_EQ(TerrainMappingTestPeer::observedCellCount(*node), 1U);
+}
+
+TEST_F(TerrainMappingNodeTest, WaitsForOdomToCatchUpBeforeApproximateMatch) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    constexpr std::int64_t kCloudStampNs = 1040000000LL;
+
+    TerrainMappingTestPeer::onOdomNanoseconds(
+        *node,
+        1000000000LL,
+        0.0);
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{4.0F, 0.0F, 0.0F}}, kCloudStampNs));
+
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 1U);
+    EXPECT_FALSE(TerrainMappingTestPeer::gridInitialized(*node));
+
+    TerrainMappingTestPeer::onOdomNanoseconds(
+        *node,
+        1050000000LL,
+        3.0);
+
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 0U);
+    EXPECT_TRUE(TerrainMappingTestPeer::gridInitialized(*node));
+    EXPECT_NEAR(TerrainMappingTestPeer::originX(*node), -7.0, 1e-6);
+}
+
+TEST_F(TerrainMappingNodeTest, ExpiresCloudAfterOdomPassesSyncTolerance) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureSynchronization(
+        *node,
+        20U,
+        50000000LL);
+
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, 1000000000LL));
+    ASSERT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 1U);
+
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, 1050000001LL);
+
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 0U);
+    EXPECT_FALSE(TerrainMappingTestPeer::gridInitialized(*node));
+}
+
+TEST_F(TerrainMappingNodeTest, MatchesCloudAtExactSyncTolerance) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureSynchronization(
+        *node,
+        20U,
+        50000000LL);
+
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, 1000000000LL));
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, 1050000000LL);
+
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 0U);
+    EXPECT_TRUE(TerrainMappingTestPeer::gridInitialized(*node));
+    EXPECT_EQ(TerrainMappingTestPeer::observedCellCount(*node), 1U);
+}
+
+TEST_F(TerrainMappingNodeTest, MatchesOutOfOrderPendingCloudsByStamp) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{2.0F, 0.0F, 0.0F}}, 1020000000LL));
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, 1000000000LL));
+    ASSERT_EQ(
+        TerrainMappingTestPeer::oldestPendingCloudStamp(*node),
+        1000000000LL);
+
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, 1000000000LL);
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 1U);
+    EXPECT_EQ(TerrainMappingTestPeer::observedCellCount(*node), 1U);
+
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, 1020000000LL);
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 0U);
+    EXPECT_EQ(TerrainMappingTestPeer::observedCellCount(*node), 2U);
+}
+
+TEST_F(TerrainMappingNodeTest, BoundsPendingCloudQueue) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureSynchronization(
+        *node,
+        2U,
+        50000000LL);
+
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, 1000000000LL));
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, 1100000000LL));
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, 1200000000LL));
+
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 2U);
+    EXPECT_EQ(
+        TerrainMappingTestPeer::oldestPendingCloudStamp(*node),
+        1100000000LL);
+}
+
+TEST_F(TerrainMappingNodeTest, ConsumesMatchedCloudOnlyOnce) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    constexpr std::int64_t kStampNs = 1000000000LL;
+
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, kStampNs));
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, kStampNs);
+
+    const auto first_cell = TerrainMappingTestPeer::cellAt(*node, 1.0, 0.0);
+    ASSERT_TRUE(first_cell.has_value());
+    ASSERT_EQ(first_cell->point_count, 1U);
+
+    TerrainMappingTestPeer::onOdomNanoseconds(*node, kStampNs);
+
+    const auto second_cell = TerrainMappingTestPeer::cellAt(*node, 1.0, 0.0);
+    ASSERT_TRUE(second_cell.has_value());
+    EXPECT_EQ(second_cell->point_count, 1U);
+}
+
 TEST_F(TerrainMappingNodeTest, FiltersPointsAndStoresZStatistics) {
 
     auto node = std::make_shared<TerrainMappingNode>();
@@ -330,9 +544,15 @@ TEST_F(TerrainMappingNodeTest, TimeResetClearsTerrainMap) {
         filtered_points));
     ASSERT_TRUE(TerrainMappingTestPeer::gridInitialized(*node));
 
+    TerrainMappingTestPeer::onCloud(
+        *node,
+        makeCloud({{1.0F, 0.0F, 0.0F}}, 3000000000LL));
+    ASSERT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 1U);
+
     TerrainMappingTestPeer::onOdom(*node, 1);
     EXPECT_FALSE(TerrainMappingTestPeer::gridInitialized(*node));
     EXPECT_EQ(TerrainMappingTestPeer::observedCellCount(*node), 0U);
+    EXPECT_EQ(TerrainMappingTestPeer::pendingCloudCount(*node), 0U);
 }
 
 // 测试从机器人种子传播平坦地面

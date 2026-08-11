@@ -89,18 +89,30 @@ private:
     using CloudMsg = sensor_msgs::msg::PointCloud2;
     using OdomMsg = nav_msgs::msg::Odometry;
 
+    struct PendingCloud {
+        std::int64_t stamp_ns{0};
+        CloudMsg::ConstSharedPtr msg;
+    };
+
+    struct MatchedInput {
+        CloudMsg::ConstSharedPtr cloud;
+        OdomSample odom;
+    };
+
     void loadParams();
 
     // 输入回调和时间匹配接口。
     void onCloud(const CloudMsg::ConstSharedPtr msg);
     void onOdom(const OdomMsg::ConstSharedPtr msg);
-    bool findNearestOdom(
+    void tryMatchPendingClouds();
+    void processMatchedCloud(const MatchedInput &matched_input);
+    bool findNearestOdomLocked(
         std::int64_t cloud_stamp_ns,
         OdomSample &matched_odom) const;
-    void trimOdomBuffer(std::int64_t newest_stamp_ns);
+    void trimOdomBufferLocked();
     std::int64_t stampToNanoseconds(const rclcpp::Time &stamp) const;
 
-    // 阶段二：局部滚动 XY 栅格和点云处理。
+    // 局部滚动 XY 栅格和点云处理。
     bool processSynchronizedCloud(
         const CloudMsg &cloud,
         const OdomSample &matched_odom,
@@ -156,8 +168,9 @@ private:
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr
         obstacle_map_publisher_;
 
-    mutable std::mutex odom_mutex_;
+    mutable std::mutex sync_mutex_;
     std::deque<OdomSample> odom_buffer_;
+    std::deque<PendingCloud> pending_clouds_;
 
     mutable std::mutex terrain_mutex_;
     std::vector<TerrainCell> terrain_grid_;
@@ -168,6 +181,7 @@ private:
     bool terrain_grid_initialized_{false};
 
     std::size_t max_odom_buffer_size_{200};
+    std::size_t max_pending_cloud_size_{20};
     std::int64_t max_sync_delay_ns_{50000000LL};
 
     double resolution_{0.10};
