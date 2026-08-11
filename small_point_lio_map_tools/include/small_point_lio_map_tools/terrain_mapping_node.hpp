@@ -42,7 +42,7 @@ struct TerrainZLayer {
     float max_z{-std::numeric_limits<float>::infinity()};
 };
 
-// 保存原始高度统计和阶段三得到的连续支撑面候选。
+// 保存高度统计、地面拟合和短期障碍证据。
 struct TerrainCell {
     bool observed{false};
     bool support_valid{false}; // 可以被其他 cell 通过连续 z 传播过来
@@ -66,6 +66,12 @@ struct TerrainCell {
     float plane_residual{std::numeric_limits<float>::quiet_NaN()};
     // 只是由邻域格数和拟合残差构成的质量分数，不是概率。
     float ground_confidence{0.0F};
+    // 同一栅格内近期高于局部地面的障碍命中。
+    bool obstacle_valid{false};
+    std::uint32_t obstacle_point_count{0U};
+    float obstacle_max_height{std::numeric_limits<float>::quiet_NaN()};
+    float obstacle_max_z{std::numeric_limits<float>::quiet_NaN()};
+    std::int64_t obstacle_update_stamp_ns{-1};
 };
 
 struct TerrainPoint {
@@ -119,6 +125,13 @@ private:
         TerrainPoint &expected_ground);
     std::size_t updateGroundFitsLocked();
     bool fitGroundPlaneAtCellLocked(std::size_t cell_index);
+    bool computeRelativeGroundHeightLocked(
+        const TerrainPoint &point,
+        float &relative_height) const;
+    void updateObstacleEvidenceLocked(
+        const TerrainPoint &point,
+        std::int64_t stamp_ns);
+    void expireObstacleEvidenceLocked(std::int64_t stamp_ns);
     bool selectLayerNearHeight(
         const TerrainCell &cell,
         float reference_z,
@@ -139,6 +152,9 @@ private:
     rclcpp::Publisher<CloudMsg>::SharedPtr ground_cloud_publisher_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr
         slope_map_publisher_;
+    rclcpp::Publisher<CloudMsg>::SharedPtr obstacle_cloud_publisher_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr
+        obstacle_map_publisher_;
 
     mutable std::mutex odom_mutex_;
     std::deque<OdomSample> odom_buffer_;
@@ -174,14 +190,23 @@ private:
     double pca_radius_{0.30};
     std::size_t pca_min_cells_{8U};
     double max_plane_residual_{0.05};
+    double min_obstacle_height_{0.08};
+    double robot_collision_height_{1.50};
+    double obstacle_ground_search_radius_{0.30};
+    std::size_t min_obstacle_points_{3U};
+    double obstacle_hold_time_sec_{0.50};
+    double slope_visualization_max_deg_{25.0};
     std::int64_t ground_update_period_ns_{100000000LL};
     std::int64_t ground_support_hold_time_ns_{500000000LL};
+    std::int64_t obstacle_hold_time_ns_{500000000LL};
     std::int64_t last_ground_update_stamp_ns_{-1};
     bool publish_filtered_cloud_{true};
     bool publish_observed_map_{true};
     bool publish_ground_candidate_map_{true};
     bool publish_ground_cloud_{true};
     bool publish_slope_map_{true};
+    bool publish_obstacle_cloud_{true};
+    bool publish_obstacle_map_{true};
 
     std::string cloud_topic_{"/cloud_registered"};
     std::string odom_topic_{"/Odometry"};

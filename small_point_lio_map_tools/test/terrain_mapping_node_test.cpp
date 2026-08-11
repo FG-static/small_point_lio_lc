@@ -80,6 +80,17 @@ public:
             }));
     }
 
+    static std::size_t obstacleCellCount(TerrainMappingNode & node) {
+
+        std::lock_guard<std::mutex> lock(node.terrain_mutex_);
+        return static_cast<std::size_t>(std::count_if(
+            node.terrain_grid_.cbegin(),
+            node.terrain_grid_.cend(),
+            [](const TerrainCell & cell) {
+                return cell.obstacle_valid;
+            }));
+    }
+
     static void configureGroundSupport(TerrainMappingNode & node) {
 
         node.base_to_ground_height_ = 0.30;
@@ -106,6 +117,15 @@ public:
         node.pca_radius_ = radius;
         node.pca_min_cells_ = min_cells;
         node.max_plane_residual_ = 0.05;
+    }
+
+    static void configureObstacleExtraction(TerrainMappingNode & node) {
+
+        node.min_obstacle_height_ = 0.08;
+        node.robot_collision_height_ = 1.50;
+        node.obstacle_ground_search_radius_ = 0.30;
+        node.min_obstacle_points_ = 3U;
+        node.obstacle_hold_time_ns_ = 500000000LL;
     }
 
     static bool gridInitialized(const TerrainMappingNode & node) {
@@ -598,6 +618,198 @@ TEST_F(TerrainMappingNodeTest, RejectsCollinearGroundFit) {
 
     EXPECT_EQ(TerrainMappingTestPeer::supportCellCount(*node), points.size());
     EXPECT_EQ(TerrainMappingTestPeer::groundCellCount(*node), 0U);
+}
+
+TEST_F(TerrainMappingNodeTest, DetectsObstacleAboveFlatGround) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    TerrainMappingTestPeer::configureObstacleExtraction(*node);
+    auto odom = makeOdom(0.0, 0.0, 1000000000LL);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(0.0F), odom.stamp_ns),
+        odom,
+        filtered_points));
+
+    auto obstacle_odom = odom;
+    obstacle_odom.stamp_ns = 1010000000LL;
+    const std::vector<TerrainPoint> obstacle_points{
+        {0.85F, 0.05F, 0.30F},
+        {0.85F, 0.05F, 0.31F},
+        {0.85F, 0.05F, 0.32F},
+    };
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(obstacle_points, obstacle_odom.stamp_ns),
+        obstacle_odom,
+        filtered_points));
+
+    const auto cell = TerrainMappingTestPeer::cellAt(*node, 0.85, 0.05);
+    ASSERT_TRUE(cell.has_value());
+    EXPECT_TRUE(cell->obstacle_valid);
+    EXPECT_EQ(cell->obstacle_point_count, 3U);
+    EXPECT_NEAR(cell->obstacle_max_height, 0.32F, 1e-4F);
+    EXPECT_EQ(TerrainMappingTestPeer::obstacleCellCount(*node), 1U);
+}
+
+TEST_F(TerrainMappingNodeTest, DoesNotMarkSlopeAsObstacle) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    TerrainMappingTestPeer::configureObstacleExtraction(*node);
+    constexpr float kSlopeTangent = 0.17632698F;
+    auto odom = makeOdom(0.0, 0.0, 1000000000LL);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(kSlopeTangent), odom.stamp_ns),
+        odom,
+        filtered_points));
+
+    auto slope_odom = odom;
+    slope_odom.stamp_ns = 1010000000LL;
+    const float slope_z = 0.40F * kSlopeTangent;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({
+            {0.85F, 0.05F, slope_z},
+            {0.85F, 0.05F, slope_z},
+            {0.85F, 0.05F, slope_z}},
+            slope_odom.stamp_ns),
+        slope_odom,
+        filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::obstacleCellCount(*node), 0U);
+}
+
+TEST_F(TerrainMappingNodeTest, RequiresMultipleObstacleHits) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    TerrainMappingTestPeer::configureObstacleExtraction(*node);
+    auto odom = makeOdom(0.0, 0.0, 1000000000LL);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(0.0F), odom.stamp_ns),
+        odom,
+        filtered_points));
+
+    auto obstacle_odom = odom;
+    obstacle_odom.stamp_ns = 1010000000LL;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({{0.85F, 0.05F, 0.30F}}, obstacle_odom.stamp_ns),
+        obstacle_odom,
+        filtered_points));
+
+    const auto cell = TerrainMappingTestPeer::cellAt(*node, 0.85, 0.05);
+    ASSERT_TRUE(cell.has_value());
+    EXPECT_FALSE(cell->obstacle_valid);
+    EXPECT_EQ(cell->obstacle_point_count, 1U);
+}
+
+TEST_F(TerrainMappingNodeTest, DoesNotClassifyObstacleWithoutGround) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    TerrainMappingTestPeer::configureObstacleExtraction(*node);
+    auto odom = makeOdom(0.0, 0.0, 1000000000LL);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({
+            {2.05F, 0.05F, 0.30F},
+            {2.05F, 0.05F, 0.31F},
+            {2.05F, 0.05F, 0.32F}},
+            odom.stamp_ns),
+        odom,
+        filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::groundCellCount(*node), 0U);
+    EXPECT_EQ(TerrainMappingTestPeer::obstacleCellCount(*node), 0U);
+}
+
+TEST_F(TerrainMappingNodeTest, IgnoresPointsAboveRobotCollisionHeight) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    TerrainMappingTestPeer::configureObstacleExtraction(*node);
+    auto odom = makeOdom(0.0, 0.0, 1000000000LL);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(0.0F), odom.stamp_ns),
+        odom,
+        filtered_points));
+
+    auto high_point_odom = odom;
+    high_point_odom.stamp_ns = 1010000000LL;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({
+            {0.85F, 0.05F, 1.80F},
+            {0.85F, 0.05F, 1.81F},
+            {0.85F, 0.05F, 1.82F}},
+            high_point_odom.stamp_ns),
+        high_point_odom,
+        filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::obstacleCellCount(*node), 0U);
+}
+
+TEST_F(TerrainMappingNodeTest, ExpiresStaleObstacleEvidence) {
+
+    auto node = std::make_shared<TerrainMappingNode>();
+    TerrainMappingTestPeer::configureGroundSupport(*node);
+    TerrainMappingTestPeer::configureObstacleExtraction(*node);
+    auto odom = makeOdom(0.0, 0.0, 1000000000LL);
+    odom.position_z = 0.30;
+    std::vector<TerrainPoint> filtered_points;
+
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(0.0F), odom.stamp_ns),
+        odom,
+        filtered_points));
+
+    auto obstacle_odom = odom;
+    obstacle_odom.stamp_ns = 1010000000LL;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud({
+            {0.85F, 0.05F, 0.30F},
+            {0.85F, 0.05F, 0.31F},
+            {0.85F, 0.05F, 0.32F}},
+            obstacle_odom.stamp_ns),
+        obstacle_odom,
+        filtered_points));
+    ASSERT_EQ(TerrainMappingTestPeer::obstacleCellCount(*node), 1U);
+
+    auto expired_odom = odom;
+    expired_odom.stamp_ns = 1700000000LL;
+    ASSERT_TRUE(TerrainMappingTestPeer::processCloud(
+        *node,
+        makeCloud(makePlaneGrid(0.0F), expired_odom.stamp_ns),
+        expired_odom,
+        filtered_points));
+
+    EXPECT_EQ(TerrainMappingTestPeer::obstacleCellCount(*node), 0U);
+    const auto cell = TerrainMappingTestPeer::cellAt(*node, 0.85, 0.05);
+    ASSERT_TRUE(cell.has_value());
+    EXPECT_EQ(cell->obstacle_point_count, 0U);
 }
 
 }  // namespace small_point_lio_map_tools

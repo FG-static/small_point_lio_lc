@@ -45,6 +45,11 @@ TerrainMappingNode::TerrainMappingNode()
     slope_map_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
         "/terrain/slope_map",
         rclcpp::QoS(1).reliable().transient_local());
+    obstacle_cloud_publisher_ =
+        create_publisher<CloudMsg>("/terrain/obstacle_cloud", 10);
+    obstacle_map_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+        "/terrain/obstacle_map",
+        rclcpp::QoS(1).reliable().transient_local());
 
     RCLCPP_INFO(
         get_logger(),
@@ -78,6 +83,15 @@ TerrainMappingNode::TerrainMappingNode()
         pca_radius_,
         pca_min_cells_,
         max_plane_residual_);
+    RCLCPP_INFO(
+        get_logger(),
+        "Obstacle extraction: height=(%.2f, %.2f] min_points=%zu "
+        "ground_radius=%.2f hold=%.2fs",
+        min_obstacle_height_,
+        robot_collision_height_,
+        min_obstacle_points_,
+        obstacle_ground_search_radius_,
+        obstacle_hold_time_sec_);
 }
 
 void TerrainMappingNode::loadParams() {
@@ -159,6 +173,24 @@ void TerrainMappingNode::loadParams() {
     max_plane_residual_ = declare_parameter<double>(
         "max_plane_residual",
         max_plane_residual_);
+    min_obstacle_height_ = declare_parameter<double>(
+        "min_obstacle_height",
+        min_obstacle_height_);
+    robot_collision_height_ = declare_parameter<double>(
+        "robot_collision_height",
+        robot_collision_height_);
+    obstacle_ground_search_radius_ = declare_parameter<double>(
+        "obstacle_ground_search_radius",
+        obstacle_ground_search_radius_);
+    const auto min_obstacle_points = declare_parameter<std::int64_t>(
+        "min_obstacle_points",
+        static_cast<std::int64_t>(min_obstacle_points_));
+    obstacle_hold_time_sec_ = declare_parameter<double>(
+        "obstacle_hold_time_sec",
+        obstacle_hold_time_sec_);
+    slope_visualization_max_deg_ = declare_parameter<double>(
+        "slope_visualization_max_deg",
+        slope_visualization_max_deg_);
     publish_filtered_cloud_ = declare_parameter<bool>(
         "publish_filtered_cloud",
         publish_filtered_cloud_);
@@ -174,6 +206,12 @@ void TerrainMappingNode::loadParams() {
     publish_slope_map_ = declare_parameter<bool>(
         "publish_slope_map",
         publish_slope_map_);
+    publish_obstacle_cloud_ = declare_parameter<bool>(
+        "publish_obstacle_cloud",
+        publish_obstacle_cloud_);
+    publish_obstacle_map_ = declare_parameter<bool>(
+        "publish_obstacle_map",
+        publish_obstacle_map_);
 
     if (!std::isfinite(resolution_) || resolution_ <= 0.0) {
         RCLCPP_WARN(get_logger(), "resolution must be positive; using 0.10 m");
@@ -295,6 +333,49 @@ void TerrainMappingNode::loadParams() {
             "max_plane_residual must be positive; using 0.05 m");
         max_plane_residual_ = 0.05;
     }
+    if (!std::isfinite(min_obstacle_height_) ||
+        min_obstacle_height_ < 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "min_obstacle_height must not be negative; using 0.08 m");
+        min_obstacle_height_ = 0.08;
+    }
+    if (!std::isfinite(robot_collision_height_) ||
+        robot_collision_height_ <= min_obstacle_height_) {
+        RCLCPP_WARN(
+            get_logger(),
+            "robot_collision_height must exceed min_obstacle_height; "
+            "using min_obstacle_height + 1.00 m");
+        robot_collision_height_ = min_obstacle_height_ + 1.00;
+    }
+    if (!std::isfinite(obstacle_ground_search_radius_) ||
+        obstacle_ground_search_radius_ < 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "obstacle_ground_search_radius must not be negative; using 0.30 m");
+        obstacle_ground_search_radius_ = 0.30;
+    }
+    if (min_obstacle_points <= 0) {
+        RCLCPP_WARN(get_logger(), "min_obstacle_points must be positive; using 3");
+    }
+    min_obstacle_points_ = min_obstacle_points > 0
+        ? static_cast<std::size_t>(min_obstacle_points)
+        : 3U;
+    if (!std::isfinite(obstacle_hold_time_sec_) ||
+        obstacle_hold_time_sec_ < 0.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "obstacle_hold_time_sec must not be negative; using 0.50 s");
+        obstacle_hold_time_sec_ = 0.50;
+    }
+    if (!std::isfinite(slope_visualization_max_deg_) ||
+        slope_visualization_max_deg_ <= 0.0 ||
+        slope_visualization_max_deg_ > 90.0) {
+        RCLCPP_WARN(
+            get_logger(),
+            "slope_visualization_max_deg must be in (0, 90]; using 25 deg");
+        slope_visualization_max_deg_ = 25.0;
+    }
     ground_update_period_ns_ = std::max<std::int64_t>(
         1LL,
         static_cast<std::int64_t>(std::llround(
@@ -303,6 +384,10 @@ void TerrainMappingNode::loadParams() {
         0LL,
         static_cast<std::int64_t>(std::llround(
             ground_support_hold_time_sec_ * 1.0e9)));
+    obstacle_hold_time_ns_ = std::max<std::int64_t>(
+        0LL,
+        static_cast<std::int64_t>(std::llround(
+            obstacle_hold_time_sec_ * 1.0e9)));
 
     if (cloud_topic_.empty()) cloud_topic_ = "/cloud_registered";
     if (odom_topic_.empty()) odom_topic_ = "/Odometry";
@@ -606,6 +691,12 @@ bool TerrainMappingNode::processSynchronizedCloud(
                 }
             }
         }
+
+        // 使用最近一次地面模型累计当前批次的障碍命中。
+        for (const auto &point : filtered_points)
+            updateObstacleEvidenceLocked(point, matched_odom.stamp_ns);
+        if (update_due)
+            expireObstacleEvidenceLocked(matched_odom.stamp_ns);
     } catch (const std::exception & error) {
 
         RCLCPP_WARN_THROTTLE(
@@ -1238,6 +1329,182 @@ bool TerrainMappingNode::fitGroundPlaneAtCellLocked(
     return true;
 }
 
+/**
+ * @brief 计算点相对于地面的相对高度
+ * @param point 点坐标
+ * @param relative_height 输出的相对高度
+ * @return 计算成功返回 true，否则返回 false
+ */
+bool TerrainMappingNode::computeRelativeGroundHeightLocked(
+    const TerrainPoint &point,
+    float &relative_height
+) const {
+
+    std::size_t point_cell_index = 0U;
+    if (!worldToGridLocked(point.x, point.y, point_cell_index))
+        return false;
+
+    const std::size_t point_grid_x =
+        point_cell_index % terrain_grid_width_cells_;
+    const std::size_t point_grid_y =
+        point_cell_index / terrain_grid_width_cells_;
+    const auto radius_cells = static_cast<std::int64_t>(
+        std::ceil(obstacle_ground_search_radius_ / resolution_));
+    const double radius_squared =
+        obstacle_ground_search_radius_ * obstacle_ground_search_radius_;
+
+    bool found = false;
+    double best_distance_squared = std::numeric_limits<double>::infinity();
+    double best_height = 0.0;
+    for (std::int64_t offset_y = -radius_cells;
+         offset_y <= radius_cells;
+         ++ offset_y) {
+
+        for (std::int64_t offset_x = -radius_cells;
+             offset_x <= radius_cells;
+             ++ offset_x) {
+
+            const auto grid_x =
+                static_cast<std::int64_t>(point_grid_x) + offset_x;
+            const auto grid_y =
+                static_cast<std::int64_t>(point_grid_y) + offset_y;
+            if (grid_x < 0 || grid_y < 0 ||
+                grid_x >= static_cast<std::int64_t>(terrain_grid_width_cells_) ||
+                grid_y >= static_cast<std::int64_t>(terrain_grid_height_cells_))
+                continue;
+
+            // 筛掉非圆内区域点
+            const double distance_squared = resolution_ * resolution_ *
+                static_cast<double>(offset_x * offset_x + offset_y * offset_y);
+            if (distance_squared > radius_squared + 1e-12 ||
+                distance_squared >= best_distance_squared)
+                continue;
+
+            const std::size_t index = static_cast<std::size_t>(grid_y) *
+                terrain_grid_width_cells_ + static_cast<std::size_t>(grid_x);
+            const auto &cell = terrain_grid_[index];
+            if (!cell.ground_valid || !std::isfinite(cell.ground_z) ||
+                !std::isfinite(cell.ground_normal_x) ||
+                !std::isfinite(cell.ground_normal_y) ||
+                !std::isfinite(cell.ground_normal_z))
+                continue;
+
+            const double normal_norm = std::sqrt(
+                static_cast<double>(cell.ground_normal_x) *
+                    cell.ground_normal_x +
+                static_cast<double>(cell.ground_normal_y) *
+                    cell.ground_normal_y +
+                static_cast<double>(cell.ground_normal_z) *
+                    cell.ground_normal_z);
+            if (!std::isfinite(normal_norm) || normal_norm < 1e-6)
+                continue;
+
+            const double ground_x = terrain_origin_x_ +
+                (static_cast<double>(grid_x) + 0.5) * resolution_;
+            const double ground_y = terrain_origin_y_ +
+                (static_cast<double>(grid_y) + 0.5) * resolution_;
+            const double height = (
+                static_cast<double>(cell.ground_normal_x) *
+                    (point.x - ground_x) +
+                static_cast<double>(cell.ground_normal_y) *
+                    (point.y - ground_y) +
+                static_cast<double>(cell.ground_normal_z) *
+                    (point.z - cell.ground_z)) / normal_norm;
+            if (!std::isfinite(height))
+                continue;
+
+            found = true;
+            best_distance_squared = distance_squared;
+            best_height = height;
+        }
+    }
+
+    if (!found)
+        return false;
+    relative_height = static_cast<float>(best_height);
+    return true;
+}
+
+/**
+ * @brief 更新障碍物证据
+ * @param point 障碍物点
+ * @param stamp_ns 时间戳
+ * @note 一个点要称为障碍物，需要满足：
+ * - 相对地面高度大于最小地面高度
+ * - 相对地面高度小于等于最大车体碰撞高度
+ * - 能够找到附近的有效地面模型
+ */
+void TerrainMappingNode::updateObstacleEvidenceLocked(
+    const TerrainPoint &point,
+    const std::int64_t stamp_ns
+) {
+
+    float relative_height = 0.0F;
+    if (!computeRelativeGroundHeightLocked(point, relative_height) ||
+        relative_height <= min_obstacle_height_ ||
+        relative_height > robot_collision_height_)
+        return;
+
+    std::size_t cell_index = 0U;
+    if (!worldToGridLocked(point.x, point.y, cell_index))
+        return;
+
+    auto &cell = terrain_grid_[cell_index];
+    const bool invalid_stamp = cell.obstacle_update_stamp_ns < 0 ||
+        stamp_ns < cell.obstacle_update_stamp_ns;
+    const bool expired = !invalid_stamp &&
+        stamp_ns - cell.obstacle_update_stamp_ns > obstacle_hold_time_ns_;
+    if (invalid_stamp || expired) {
+        cell.obstacle_valid = false;
+        cell.obstacle_point_count = 0U;
+        cell.obstacle_max_height =
+            std::numeric_limits<float>::quiet_NaN();
+        cell.obstacle_max_z = std::numeric_limits<float>::quiet_NaN();
+    }
+
+    // 障碍物点计数，防止溢出
+    if (cell.obstacle_point_count <
+        std::numeric_limits<std::uint32_t>::max())
+        ++ cell.obstacle_point_count;
+    // 更新障碍物最大高度
+    if (!std::isfinite(cell.obstacle_max_height) ||
+        relative_height > cell.obstacle_max_height) {
+        cell.obstacle_max_height = relative_height;
+        cell.obstacle_max_z = point.z;
+    }
+    cell.obstacle_update_stamp_ns = stamp_ns;
+    cell.obstacle_valid = cell.obstacle_point_count >= min_obstacle_points_;
+}
+
+/**
+ * @brief 过期障碍物证据
+ * @param stamp_ns 时间戳
+ * @note 障碍物点的更新时间戳超过障碍物保留时间，将被标记为无效。
+ */
+void TerrainMappingNode::expireObstacleEvidenceLocked(
+    const std::int64_t stamp_ns
+) {
+
+    for (auto &cell : terrain_grid_) {
+
+        if (cell.obstacle_update_stamp_ns < 0)
+            continue;
+
+        const bool invalid_stamp = stamp_ns < cell.obstacle_update_stamp_ns;
+        const bool expired = !invalid_stamp &&
+            stamp_ns - cell.obstacle_update_stamp_ns > obstacle_hold_time_ns_;
+        if (!invalid_stamp && !expired)
+            continue;
+
+        cell.obstacle_valid = false;
+        cell.obstacle_point_count = 0U;
+        cell.obstacle_max_height =
+            std::numeric_limits<float>::quiet_NaN();
+        cell.obstacle_max_z = std::numeric_limits<float>::quiet_NaN();
+        cell.obstacle_update_stamp_ns = -1;
+    }
+}
+
 void TerrainMappingNode::publishDebugOutputs(
     const CloudMsg &source_cloud,
     const std::vector<TerrainPoint> &filtered_points,
@@ -1388,7 +1655,7 @@ void TerrainMappingNode::publishDebugOutputs(
         ground_cloud_publisher_->publish(ground_cloud);
     }
 
-    // 调试图直接保存 0~90 度的坡度，暂不映射为 Nav2 代价。
+    // 将显示上限内的真实坡度线性映射到 0~100。
     if (publish_slope_map_ && slope_map_publisher_) {
 
         nav_msgs::msg::OccupancyGrid slope_map;
@@ -1416,12 +1683,98 @@ void TerrainMappingNode::publishDebugOutputs(
                 if (!cell.ground_valid)
                     continue;
 
-                const long normalized_slope = std::clamp(cell.slope_deg / 25.0, 0.0, 1.0);
+                const double normalized_slope = std::clamp(
+                    cell.slope_deg / slope_visualization_max_deg_,
+                    0.0,
+                    1.0);
                 slope_map.data[index] = static_cast<std::int8_t>(
                     std::lround(normalized_slope * 100.0));
             }
         }
         slope_map_publisher_->publish(slope_map);
+    }
+
+    // 发布障碍物点云
+    if (publish_obstacle_cloud_ && obstacle_cloud_publisher_) {
+
+        std::vector<TerrainPoint> obstacle_points;
+        {
+            std::lock_guard<std::mutex> lock(terrain_mutex_);
+            if (!terrain_grid_initialized_)
+                return;
+
+            obstacle_points.reserve(terrain_grid_.size());
+            for (std::size_t index = 0U; index < terrain_grid_.size(); ++ index) {
+
+                const auto &cell = terrain_grid_[index];
+                if (!cell.obstacle_valid || !std::isfinite(cell.obstacle_max_z))
+                    continue;
+
+                const std::size_t grid_x = index % terrain_grid_width_cells_;
+                const std::size_t grid_y = index / terrain_grid_width_cells_;
+                obstacle_points.push_back({
+                    static_cast<float>(terrain_origin_x_ +
+                        (static_cast<double>(grid_x) + 0.5) * resolution_),
+                    static_cast<float>(terrain_origin_y_ +
+                        (static_cast<double>(grid_y) + 0.5) * resolution_),
+                    cell.obstacle_max_z});
+            }
+        }
+
+        CloudMsg obstacle_cloud;
+        obstacle_cloud.header = source_cloud.header;
+        obstacle_cloud.header.frame_id = odom_frame_;
+        sensor_msgs::PointCloud2Modifier modifier(obstacle_cloud);
+        modifier.setPointCloud2FieldsByString(1, "xyz");
+        modifier.resize(obstacle_points.size());
+        sensor_msgs::PointCloud2Iterator<float> iter_x(obstacle_cloud, "x");
+        sensor_msgs::PointCloud2Iterator<float> iter_y(obstacle_cloud, "y");
+        sensor_msgs::PointCloud2Iterator<float> iter_z(obstacle_cloud, "z");
+        for (const auto &point : obstacle_points) {
+
+            *iter_x = point.x;
+            *iter_y = point.y;
+            *iter_z = point.z;
+            ++ iter_x;
+            ++ iter_y;
+            ++ iter_z;
+        }
+        obstacle_cloud.is_dense = true;
+        obstacle_cloud_publisher_->publish(obstacle_cloud);
+    }
+
+    // 发布障碍物地图
+    if (publish_obstacle_map_ && obstacle_map_publisher_) {
+
+        nav_msgs::msg::OccupancyGrid obstacle_map;
+        {
+            std::lock_guard<std::mutex> lock(terrain_mutex_);
+            if (!terrain_grid_initialized_)
+                return;
+
+            obstacle_map.header = source_cloud.header;
+            obstacle_map.header.frame_id = odom_frame_;
+            obstacle_map.info.resolution = static_cast<float>(resolution_);
+            obstacle_map.info.width = static_cast<std::uint32_t>(
+                terrain_grid_width_cells_);
+            obstacle_map.info.height = static_cast<std::uint32_t>(
+                terrain_grid_height_cells_);
+            obstacle_map.info.origin.position.x = terrain_origin_x_;
+            obstacle_map.info.origin.position.y = terrain_origin_y_;
+            obstacle_map.info.origin.orientation.w = 1.0;
+            obstacle_map.data.assign(
+                terrain_grid_.size(),
+                static_cast<std::int8_t>(-1));
+            for (std::size_t index = 0U; index < terrain_grid_.size(); ++ index) {
+
+                const auto &cell = terrain_grid_[index];
+                if (cell.obstacle_valid)
+                    obstacle_map.data[index] = 100;
+                else if (cell.ground_valid)
+                    obstacle_map.data[index] = 0;
+            }
+        }
+        obstacle_map_publisher_->publish(obstacle_map);
     }
 }
 
